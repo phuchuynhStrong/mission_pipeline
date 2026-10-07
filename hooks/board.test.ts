@@ -19,6 +19,7 @@ const sample: Mission = {
     worktree: { status: 'pending' },
     build: { status: 'pending' },
     review: { status: 'pending' },
+    pr: { status: 'pending' },
   },
 }
 
@@ -65,7 +66,7 @@ const props = {
 test('rowsOf marks each stage by its status', () => {
   const row = rowsOf([sample], 100)[0]!
   expect(row.ticket).toBe('WBS-12345')
-  expect(row.cells.map(c => c.mark).join('')).toBe('■✱□□□□')
+  expect(row.cells.map(c => c.mark).join('')).toBe('■✱□□□□□')
   expect(row.note).toBe('brainstorm with senior')
 })
 

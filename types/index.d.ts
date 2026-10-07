@@ -1,7 +1,7 @@
 export type StageStatus = 'pending' | 'active' | 'waiting_user' | 'done' | 'failed'
 
-/** `ready` = reviewed, PR not yet merged. `aborted` and `done` are terminal: the board hides them and never auto-opens for them. */
-export type MissionStageName = 'read' | 'spec' | 'plan' | 'worktree' | 'build' | 'review' | 'ready' | 'done' | 'aborted'
+/** `pr` = PR open, Greptile check running or waiting on the user. `ready` = Greptile done, PR not yet merged. `aborted` and `done` are terminal: the board hides them and never auto-opens for them. */
+export type MissionStageName = 'read' | 'spec' | 'plan' | 'worktree' | 'build' | 'review' | 'pr' | 'ready' | 'done' | 'aborted'
 
 export type MissionStage = { status: StageStatus }
 

@@ -5,7 +5,7 @@ import type { Mission, StageStatus } from '../types'
 export const PANE = 'pipeline-board'
 let cache: Mission[] = []
 
-const STAGES = ['read', 'spec', 'plan', 'worktree', 'build', 'review'] as const
+const STAGES = ['read', 'spec', 'plan', 'worktree', 'build', 'review', 'pr'] as const
 const LABEL: Record<string, [wide: string, narrow: string]> = {
   read: ['read', 'R'],
   spec: ['spec', 'S'],
@@ -13,6 +13,7 @@ const LABEL: Record<string, [wide: string, narrow: string]> = {
   worktree: ['tree', 'T'],
   build: ['build', 'B'],
   review: ['review', 'V'],
+  pr: ['pr', 'M'],
 }
 const MARK: Record<StageStatus, string> = {
   pending: '□',

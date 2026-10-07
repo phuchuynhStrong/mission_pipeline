@@ -18,8 +18,8 @@ attention.reason="<one line>"` when a mission waits on the user; `attention=null
 import json, os, sys, argparse, datetime, tempfile
 
 ROOT = os.path.join(os.path.expanduser("~"), ".claude", "pipeline")
-STAGES = ["read", "spec", "plan", "worktree", "build", "review"]
-TERMINAL = ["done", "aborted"]  # stage values the board treats as closed; "ready" is still open
+STAGES = ["read", "spec", "plan", "worktree", "build", "review", "pr"]
+TERMINAL = ["done", "aborted"]  # stage values the board treats as closed; "ready" (PR open, waiting merge) is still open
 
 
 def now():
@@ -76,7 +76,8 @@ def cmd_new(a):
             "plan": {"status": "pending", "worker": "", "path": "", "tasks": 0, "parallel": False},
             "worktree": {"status": "pending", "path": "", "branch": ""},
             "build": {"status": "pending", "workers": [], "done": 0},
-            "review": {"status": "pending", "worker": "", "verdict": ""},
+            "review": {"status": "pending", "worker": "", "verdict": "", "rounds": 0},
+            "pr": {"status": "pending", "number": 0, "url": "", "greptile": "", "worker": ""},
         },
         "events": [{"at": now(), "text": "mission created"}],
     }
