@@ -1,0 +1,11 @@
+{
+  "name": "mission-pipeline",
+  "owner": { "name": "Phuc Huynh" },
+  "plugins": [
+    {
+      "name": "pipeline",
+      "source": "./",
+      "description": "Run a mission (Linear ticket, feature, bug) through supervised Orca workers: read > spec > plan > tree > build > review, with a mission board pane."
+    }
+  ]
+}

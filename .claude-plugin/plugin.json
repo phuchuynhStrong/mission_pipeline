@@ -1,0 +1,14 @@
+{
+  "name": "pipeline",
+  "version": "0.1.0",
+  "description": "Mission board pane for the pipeline skill: one row per mission, read > spec > plan > tree > build > review",
+  "author": { "name": "Phuc Huynh" },
+  "userConfig": {
+    "root": {
+      "type": "string",
+      "title": "State folder",
+      "description": "Folder holding <repo>/<mission>.json state files. Empty means ~/.claude/pipeline. A relative path is under the plugin folder.",
+      "default": ""
+    }
+  }
+}
