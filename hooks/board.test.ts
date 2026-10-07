@@ -49,7 +49,7 @@ function fakeFs(on: On, list: Mission[], opens?: Array<Record<string, unknown>>)
 }
 
 const open = {
-  command: 'pipeline-board',
+  command: 'pboard',
   args: '',
   origin: { kind: 'composer' as const },
   presentation: { isFullscreen: true, columns: 160 },
@@ -157,7 +157,7 @@ test('a focused pane draws no focus hint', async ($, on) => {
   expect(await ui.find({ text: 'ctrl+x tab focuses the board; then the row digit or Enter presses switch' })).toBeUndefined()
 })
 
-test('/pipeline-board asks for the keyboard', async ($, on) => {
+test('/pboard asks for the keyboard', async ($, on) => {
   const opens: Array<Record<string, unknown>> = []
   fakeFs(on, [{ ...sample, attention: { terminal: 'term_42', reason: 'r' } }], opens)
   await $.command.run(open)

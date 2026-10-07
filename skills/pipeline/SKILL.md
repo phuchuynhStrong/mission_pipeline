@@ -57,7 +57,7 @@ released after its last task. `events+="released <role> <handle>"` each time.
 1. **Intake.** Get the ticket text (orca-linear skill if it is a Linear id). Parse `--base
    <branch>` from the arguments (default: the repo's default branch). Write `mission.md`.
    `state.py new ... --base-branch <base>`, then `state.py set ... owner_repo=<owner/repo>`. `orca status --json`, then `run-create` and store
-   `run_id`. Open the board: `/pipeline-board`.
+   `run_id`. Open the board: `/pboard`.
 2. **Read.** Pick 1 to 4 reader angles from the mission text (UI, data, patterns, tests). Start
    all readers in one wave, `--worktree current`, arm the wait (Waiting) and end the turn. On
    each `worker_done` record the path and release that reader. Continue when every reader is
@@ -207,7 +207,7 @@ the paths.
 
 ## Board
 
-`/pipeline-board` opens the pane this skill ships (`hooks/`). One row per mission:
+`/pboard` opens the pane this skill ships (`hooks/`). One row per mission:
 `read › spec › plan › tree › build › review › pr`, filled by the state file. The ticket is green while
 the pipeline runs, yellow while it waits on the user (`waiting_user`, `attention`, `ready`), red
 when a stage `failed`. A row with `attention` carries a `switch` button. A `ready` mission stays

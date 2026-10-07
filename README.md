@@ -1,6 +1,6 @@
 # mission_pipeline
 
-A Claude Code plugin. It ships the `pipeline` skill, the `/pipeline-board` pane, and the
+A Claude Code plugin. It ships the `pipeline` skill, the `/pboard` pane, and the
 mission state script. One mission (a Linear ticket, a feature, a bug) runs through supervised
 Orca workers: read > spec > plan > tree > build > review.
 
@@ -29,7 +29,7 @@ Orca workers: read > spec > plan > tree > build > review.
 .claude-plugin/marketplace.json
 skills/pipeline/SKILL.md       the coordinator skill
 skills/pipeline/references/    Orca command list, worker role specs
-hooks/                         /pipeline-board pane (register.tsx, hooks.json, test)
+hooks/                         /pboard pane (register.tsx, hooks.json, test)
 scripts/state.py               mission state: new / set / done / abort / show / list
 types/index.d.ts               Mission state types shared by the hook and the test
 ```
@@ -41,4 +41,4 @@ Change the folder with the plugin's `root` user config.
 
 The board pane is a plugin hook module (`hooks/register.tsx`). It was developed with the
 skill installed under `~/.claude/skills/pipeline`. Loading it from a marketplace install has
-not been verified yet. If `/pipeline-board` does not open, report it in an issue.
+not been verified yet. If `/pboard` does not open, report it in an issue.

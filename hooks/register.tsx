@@ -142,7 +142,7 @@ async function load($: EngineInterface, option: string) {
 export const register: Register = (on, options) => {
   const rootOption = typeof options.root === 'string' ? options.root : ''
   on('session.start', async ($, e, next) => {
-    await $.command.register({ name: 'pipeline-board', description: 'Open the pipeline mission board' })
+    await $.command.register({ name: 'pboard', description: 'Open the pipeline mission board' })
     await load($, rootOption)
     $.clock.every(POLL_MS, () => void load($, rootOption))
     const open = cache.some(m => !isClosed(m))
@@ -150,7 +150,7 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'pipeline-board' }, async $ => {
+  on('command.run', { command: 'pboard' }, async $ => {
     await load($, rootOption)
     // The person asked for the board: hand it the keyboard so hotkeys and Enter work at once.
     await $.ui.open({ id: PANE, title: 'Pipeline', focus: true })
