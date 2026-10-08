@@ -45,12 +45,14 @@ export function trackOf(m: Mission): Track {
   return STAGES.map(name => (m.stages?.[name]?.status ?? 'pending') as StageStatus)
 }
 
-/** Pure: the one badge a row shows. failed > waiting_user > ready (merge) > active > none. */
+/** Pure: the one badge a row shows. failed > waiting_user > ready (merge) > attention > active > none. */
 export function badgeOf(m: Mission): Badge | undefined {
   const track = trackOf(m)
   if (track.includes('failed')) return { word: 'FAILED', tone: 'fail' }
   if (track.includes('waiting_user')) return { word: 'ASKS', tone: 'ask' }
   if (m.stage === 'ready') return { word: 'MERGE', tone: 'merge' }
+  // An attention handle means the coordinator waits on the user, even while a stage is still active.
+  if (m.attention?.terminal) return { word: 'ASKS', tone: 'ask' }
   if (track.includes('active')) return { word: '⋯ working', tone: 'work' }
   return undefined
 }
@@ -228,30 +230,35 @@ export const register: Register = (on, options) => {
           const tone = row.marker.tone
           return (
             <Box flexDirection="row" key={row.id}>
-              <Text bold color={tone ? MARKER_COLOR[tone] : undefined} dimColor={!tone}>
-                {`${row.marker.glyph} `}
-              </Text>
-              <Text bold>{row.ticket.padEnd(ticketWidth)}</Text>
-              <Text dimColor={running}>{row.stage.padEnd(STAGE_WIDTH)}</Text>
+              {/* Fixed lanes never shrink; only the note gives way to the width. */}
+              <Box flexShrink={0}>
+                <Text bold color={tone ? MARKER_COLOR[tone] : undefined} dimColor={!tone}>
+                  {`${row.marker.glyph} `}
+                </Text>
+                <Text bold>{row.ticket.padEnd(ticketWidth)}</Text>
+                <Text dimColor={running}>{row.stage.padEnd(STAGE_WIDTH)}</Text>
+              </Box>
               <Box flexGrow={1}>
                 <Text dimColor={running} wrap="truncate-end">
                   {row.note}
                 </Text>
               </Box>
-              <Text> </Text>
-              {row.terminal ? (
-                <Button
-                  key={`switch:${row.id}`}
-                  hotkey={row.hotkey}
-                  plain
-                  autoFocus={i === firstSwitch ? true : undefined}
-                  onPress={() => void switchTo($, row)}
-                >
-                  {row.hotkey ?? '⏎'}
-                </Button>
-              ) : (
-                <Text dimColor>{running ? row.age : ''}</Text>
-              )}
+              <Box flexShrink={0}>
+                <Text> </Text>
+                {row.terminal ? (
+                  <Button
+                    key={`switch:${row.id}`}
+                    hotkey={row.hotkey}
+                    plain
+                    autoFocus={i === firstSwitch ? true : undefined}
+                    onPress={() => void switchTo($, row)}
+                  >
+                    ⏎
+                  </Button>
+                ) : (
+                  <Text dimColor>{running ? row.age : ''}</Text>
+                )}
+              </Box>
             </Box>
           )
         })}

@@ -77,6 +77,9 @@ test('badgeOf: failed beats asks beats merge beats working', () => {
   expect(badgeOf({ ...st({ spec: { status: 'done' }, pr: { status: 'active' } }), stage: 'ready' })).toEqual({ word: 'MERGE', tone: 'merge' })
   expect(badgeOf(st({ spec: { status: 'active' } }))).toEqual({ word: '⋯ working', tone: 'work' })
   expect(badgeOf(st({ spec: { status: 'pending' } }))).toBeUndefined()
+  // An attention handle asks even while a stage is still active, so the marker agrees with toneOf.
+  expect(badgeOf({ ...st({ spec: { status: 'active' } }), attention: { terminal: 't', reason: 'r' } })).toEqual({ word: 'ASKS', tone: 'ask' })
+  expect(badgeOf({ ...st({ spec: { status: 'done' }, pr: { status: 'active' } }), stage: 'ready', attention: { terminal: 't', reason: 'r' } })).toEqual({ word: 'MERGE', tone: 'merge' })
 })
 
 test('stageWordOf names the stage lane in at most 8 chars', () => {
@@ -222,8 +225,9 @@ test('the pane draws the marker, the stage word and the legend', async ($, on) =
   fakeFs(on, [sample, { ...sample, id: 'wbs-2', ticket: 'WBS-2', stages: {} }])
   await $.command.run(open)
   const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
-  expect(await ui.find({ text: '? ' })).toBeDefined()
-  expect(await ui.find({ text: '· ' })).toBeDefined()
+  // Exact matches, so the legend's '? asks' cannot stand in for a row marker.
+  expect(await ui.find({ type: 'Text', text: /^\? $/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^· $/ })).toBeDefined()
   expect(await ui.find({ text: /^spec\s*$/ })).toBeDefined()
   expect(await ui.find({ text: '? asks' })).toBeDefined()
   expect(await ui.find({ text: '» working' })).toBeDefined()
@@ -236,6 +240,8 @@ test('a long ticket and a long note keep the switch button on the row', async ($
   await $.command.run(open)
   const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props: { ...props, bodyColumns: 40 } })
   expect(await ui.find({ key: 'switch:wbs-123456789' })).toBeDefined()
+  // The ticket lane widens to the longest ticket plus one cell, so every row shares one lane.
+  expect(await ui.find({ type: 'Text', text: /^WBS-123456789 $/ })).toBeDefined()
   const note = (await ui.findAll({ type: 'Text', text: reason }))[0]
   expect(note?.props.wrap).toBe('truncate-end')
 })

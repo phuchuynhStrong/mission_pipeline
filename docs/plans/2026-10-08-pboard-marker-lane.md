@@ -331,7 +331,7 @@ Replace the `on('ui.render', …)` hook with:
                   autoFocus={i === firstSwitch ? true : undefined}
                   onPress={() => void switchTo($, row)}
                 >
-                  {row.hotkey ?? '⏎'}
+                  ⏎
                 </Button>
               ) : (
                 <Text dimColor>{running ? row.age : ''}</Text>
@@ -358,7 +358,7 @@ Replace the `on('ui.render', …)` hook with:
 Notes for the implementer:
 - `TONE_COLOR` is still used by nothing after this change except `toneOf` callers? It is not. Keep the constant anyway; do not delete it (out of scope). If the type checker flags it unused and fails the run, prefix nothing and do not delete: report back instead.
 - `Box` props `flexGrow`, `gap` and `Text` `wrap="truncate-end"` exist in the pane types (claude-code.d.ts: Box `flexGrow` line 957, `gap` line 963; Text `wrap` line 12511).
-- The Button label is the hotkey digit when there is one, else `⏎`. Do not pass `color` to `Button`.
+- The Button label is `⏎`; a plain Button with a hotkey draws `1: ⏎` by itself (claude-code.d.ts:9352). Do not pass `color` to `Button`.
 
 - [ ] **Step 4: Run to verify all pass.** Run: `claude plugin test .` Expected: all pass, including `only a focused pane draws the key footer`, `pressing switch runs orca terminal switch`, `the pane says so when no mission exists`.
 
@@ -384,7 +384,7 @@ git commit -m "Draw pboard rows as a marker lane with a legend"
 
 Replace that span with:
 
-> `/pboard` opens the pane this skill ships (`hooks/`). One line per mission: a status glyph (`?` asks, `!` failed, `✓` merge-ready, `»` working, `·` idle), the ticket, the stage word (`read`, `spec`, `plan`, `tree`, `build`, `review`, `pr`), then `attention.reason`, else `note`, cut to the line. Rows that need the user come first: `!` when a stage `failed`, `?` or `✓` while it waits on the user (`waiting_user`, `attention`, `ready`), then running rows with the time since `updated` at the right edge. A legend line sits under the rows. A row with `attention` carries a switch button labelled with its hotkey digit.
+> `/pboard` opens the pane this skill ships (`hooks/`). One line per mission: a status glyph (`?` asks, `!` failed, `✓` merge-ready, `»` working, `·` idle), the ticket, the stage word (`read`, `spec`, `plan`, `tree`, `build`, `review`, `pr`), then `attention.reason`, else `note`, cut to the line. Rows that need the user come first: `!` when a stage `failed`, `?` or `✓` while it waits on the user (`waiting_user`, `attention`, `ready`), then running rows with the time since `updated` at the right edge. A legend line sits under the rows. A row with `attention` carries a switch button (`1: ⏎`, its hotkey digit then Enter).
 
 Leave the rest of the paragraph (from "A `ready` mission stays listed") unchanged.
 

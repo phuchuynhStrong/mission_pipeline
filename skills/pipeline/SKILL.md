@@ -213,7 +213,7 @@ asks, `!` failed, `✓` merge-ready, `»` working, `·` idle), the ticket, the s
 line. Rows that need the user come first: `!` when a stage `failed`, `?` or `✓` while it waits on
 the user (`waiting_user`, `attention`, `ready`), then running rows with the time since `updated` at
 the right edge. A legend line sits under the rows. A row with `attention` carries a switch button
-labelled with its hotkey digit. A `ready` mission stays
+(`1: ⏎`, its hotkey digit then Enter). A `ready` mission stays
 listed until `state.py done` (PR merged or the user's word). Done and aborted missions are
 hidden; `state.py list --all` still shows them. Orca's own app shows
 the Run, Tasks and Dispatches; the board shows the mission stages.
