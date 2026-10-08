@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { PANE, ageOf, badgeOf, isClosed, rowsOf, switchArgv, toneOf, trackOf } from './register'
+import { PANE, ageOf, badgeOf, isClosed, markerOf, rowsOf, stageWordOf, switchArgv, toneOf, trackOf } from './register'
 import type { Mission } from '../types'
 
 const sample: Mission = {
@@ -77,6 +77,22 @@ test('badgeOf: failed beats asks beats merge beats working', () => {
   expect(badgeOf({ ...st({ spec: { status: 'done' }, pr: { status: 'active' } }), stage: 'ready' })).toEqual({ word: 'MERGE', tone: 'merge' })
   expect(badgeOf(st({ spec: { status: 'active' } }))).toEqual({ word: '⋯ working', tone: 'work' })
   expect(badgeOf(st({ spec: { status: 'pending' } }))).toBeUndefined()
+})
+
+test('stageWordOf names the stage lane in at most 8 chars', () => {
+  expect(stageWordOf(sample)).toBe('spec')
+  expect(stageWordOf({ ...sample, stage: 'worktree' })).toBe('tree')
+  expect(stageWordOf({ ...sample, stage: 'ready' })).toBe('pr')
+  expect(stageWordOf({ ...sample, stage: 'integration-x' })).toBe('integrat')
+  expect(stageWordOf({ ...sample, stage: '' })).toBe('')
+})
+
+test('markerOf: one glyph per badge tone, a dot without a badge', () => {
+  expect(markerOf({ word: 'ASKS', tone: 'ask' })).toEqual({ glyph: '?', tone: 'ask' })
+  expect(markerOf({ word: 'FAILED', tone: 'fail' })).toEqual({ glyph: '!', tone: 'fail' })
+  expect(markerOf({ word: 'MERGE', tone: 'merge' })).toEqual({ glyph: '✓', tone: 'merge' })
+  expect(markerOf({ word: '⋯ working', tone: 'work' })).toEqual({ glyph: '»', tone: 'work' })
+  expect(markerOf(undefined)).toEqual({ glyph: '·' })
 })
 
 test('ageOf counts minutes, hours and days since updated', () => {

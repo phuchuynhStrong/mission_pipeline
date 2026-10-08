@@ -76,6 +76,23 @@ export function badgeOf(m: Mission): Badge | undefined {
   return undefined
 }
 
+const STAGE_WIDTH = 8
+const STAGE_WORD: Record<string, string> = { ready: 'pr', worktree: 'tree' }
+
+/** Pure: the stage lane word, at most STAGE_WIDTH chars. `ready` reads `pr`, `worktree` reads `tree`. */
+export function stageWordOf(m: Mission): string {
+  const word = STAGE_WORD[m.stage] ?? m.stage ?? ''
+  return word.slice(0, STAGE_WIDTH)
+}
+
+export type Marker = { glyph: string; tone?: BadgeTone }
+const MARKER: Record<BadgeTone, string> = { ask: '?', fail: '!', merge: '✓', work: '»' }
+
+/** Pure: the one-cell status glyph of a row; a row without a badge gets a dim dot. */
+export function markerOf(badge: Badge | undefined): Marker {
+  return badge ? { glyph: MARKER[badge.tone], tone: badge.tone } : { glyph: '·' }
+}
+
 /** Pure: time since `updated` as 0m..59m, 1h..23h, 1d..; empty when `updated` does not parse. */
 export function ageOf(updated: string, now: number): string {
   const at = Date.parse(updated)
