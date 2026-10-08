@@ -89,13 +89,6 @@ test('ageOf counts minutes, hours and days since updated', () => {
   expect(ageOf('not a date', at)).toBe('')
 })
 
-test('rowsOf marks each stage by its status', () => {
-  const row = rowsOf([sample], 100)[0]!
-  expect(row.ticket).toBe('WBS-12345')
-  expect(row.cells.map(c => c.mark).join('')).toBe('■✱□□□□□')
-  expect(row.note).toBe('brainstorm with senior')
-})
-
 test('a done or aborted mission is closed and left off the board', () => {
   const aborted: Mission = { ...sample, id: 'wbs-1', ticket: 'WBS-1', stage: 'aborted', note: 'ABORTED: user' }
   expect(isClosed(aborted)).toBe(true)
@@ -120,11 +113,25 @@ test('rowsOf carries the attention terminal', () => {
   expect(switchArgv('term_9')).toEqual(['orca', 'terminal', 'switch', '--terminal', 'term_9', '--json'])
 })
 
-test('rowsOf shortens labels on a narrow body', () => {
-  const wide = rowsOf([sample], 100)[0]!
-  const narrow = rowsOf([sample], 50)[0]!
-  expect(wide.cells[0]?.label).toBe('read')
-  expect(narrow.cells[0]?.label).toBe('R')
+test('rowsOf puts blocked, then asking, then running first and keeps order inside a tone', () => {
+  const running = (id: string): Mission => ({ ...sample, id, ticket: id, stages: { ...sample.stages, spec: { status: 'active' } } })
+  const blocked: Mission = { ...sample, id: 'B', ticket: 'B', stages: { ...sample.stages, build: { status: 'failed' } } }
+  const list = [running('R1'), { ...sample, id: 'A1', ticket: 'A1' }, running('R2'), blocked, { ...sample, id: 'A2', ticket: 'A2' }]
+  expect(rowsOf(list, 0).map(r => r.ticket)).toEqual(['B', 'A1', 'A2', 'R1', 'R2'])
+})
+
+test('rowsOf gives hotkeys 1..n to rows with a terminal, in display order', () => {
+  const att = (id: string, extra: Partial<Mission> = {}): Mission => ({ ...sample, id, ticket: id, attention: { terminal: `t_${id}`, reason: 'r' }, ...extra })
+  const rows = rowsOf([{ ...sample, id: 'X', ticket: 'X' }, att('Y'), att('Z', { stages: { ...sample.stages, build: { status: 'failed' } } })], 0)
+  expect(rows.map(r => [r.ticket, r.hotkey])).toEqual([['Z', '1'], ['X', undefined], ['Y', '2']])
+  const many = Array.from({ length: 11 }, (_, i) => att(`M${i}`))
+  expect(rowsOf(many, 0).map(r => r.hotkey)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9', undefined, undefined])
+})
+
+test('rowsOf note falls back from attention reason to note to title, on one line', () => {
+  expect(rowsOf([{ ...sample, attention: { terminal: 't', reason: 'SMS or\nlock?' } }], 0)[0]?.note).toBe('SMS or lock?')
+  expect(rowsOf([sample], 0)[0]?.note).toBe('brainstorm with senior')
+  expect(rowsOf([{ ...sample, note: '' }], 0)[0]?.note).toBe('secondary phone')
 })
 
 test('the pane lists one row per mission from the state folder', async ($, on) => {
@@ -148,7 +155,7 @@ test('the pane hides aborted and done missions', async ($, on) => {
   expect(await ui.find({ text: 'ABORTED: user stopped' })).toBeUndefined()
   expect(await ui.find({ text: 'WBS-2' })).toBeUndefined()
   expect(await ui.find({ text: 'MERGED into main' })).toBeUndefined()
-  expect(await ui.find({ text: 'No missions yet.' })).toBeDefined()
+  expect(await ui.find({ text: 'No open missions.' })).toBeDefined()
 })
 
 test('pressing switch runs orca terminal switch for that mission', async ($, on) => {
@@ -167,20 +174,30 @@ test('pressing switch runs orca terminal switch for that mission', async ($, on)
   for (const surface of ['terminal', 'desktop'] as const) {
     runs.length = 0
     const ui = await $.ui.mount({ plugin: 'pipeline', surface, component: 'Pane', requestId: PANE, props })
-    expect(await ui.find({ text: 'switch' })).toBeDefined()
-    expect(await ui.find({ text: 'ctrl+x tab focuses the board; then the row digit or Enter presses switch' })).toBeDefined()
+    expect(await ui.find({ key: 'switch:wbs-12345' })).toBeDefined()
     await ui.press({ key: 'switch:wbs-12345' })
     expect(runs).toEqual([['orca', 'terminal', 'switch', '--terminal', 'term_42', '--json']])
   }
   expect(toasts.some(t => t.includes('term_42'))).toBe(true)
 })
 
-test('a focused pane draws no focus hint', async ($, on) => {
+test('only a focused pane draws the key footer', async ($, on) => {
   fakeFs(on, [{ ...sample, attention: { terminal: 'term_42', reason: 'r' } }])
   await $.command.run(open)
-  const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props: { ...props, isFocused: true } })
-  expect(await ui.find({ text: 'switch' })).toBeDefined()
-  expect(await ui.find({ text: 'ctrl+x tab focuses the board; then the row digit or Enter presses switch' })).toBeUndefined()
+  const footer = '↑↓ move · ⏎ switch · 1-1 jump · esc back'
+  const rest = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
+  expect(await rest.find({ text: footer })).toBeUndefined()
+  const focused = await $.ui.mount({ plugin: 'pipeline', surface: 'desktop', component: 'Pane', requestId: PANE, props: { ...props, isFocused: true } })
+  expect(await focused.find({ key: 'switch:wbs-12345' })).toBeDefined()
+  expect(await focused.find({ text: footer })).toBeDefined()
+})
+
+test('the pane draws the stage letters and the badge word', async ($, on) => {
+  fakeFs(on, [sample])
+  await $.command.run(open)
+  const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
+  expect(await ui.find({ text: /r s p t b v m/ })).toBeDefined()
+  expect(await ui.find({ text: ' ASKS ' })).toBeDefined()
 })
 
 test('/pboard asks for the keyboard', async ($, on) => {
@@ -194,12 +211,12 @@ test('a mission without attention has no switch button', async ($, on) => {
   fakeFs(on, [sample])
   await $.command.run(open)
   const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
-  expect(await ui.find({ text: 'switch' })).toBeUndefined()
+  expect(await ui.find({ key: 'switch:wbs-12345' })).toBeUndefined()
 })
 
 test('the pane says so when no mission exists', async ($, on) => {
   fakeFs(on, [])
   await $.command.run(open)
   const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
-  expect(await ui.find({ text: 'No missions yet.' })).toBeDefined()
+  expect(await ui.find({ text: 'No open missions.' })).toBeDefined()
 })
