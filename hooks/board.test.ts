@@ -150,6 +150,16 @@ test('rowsOf note falls back from attention reason to note to title, on one line
   expect(rowsOf([{ ...sample, note: '' }], 0)[0]?.note).toBe('secondary phone')
 })
 
+test('rowsOf carries the stage word and the marker', () => {
+  const [row] = rowsOf([sample], 0)
+  expect(row?.stage).toBe('spec')
+  expect(row?.marker).toEqual({ glyph: '?', tone: 'ask' })
+  const running = rowsOf([{ ...sample, stage: 'build', stages: { ...sample.stages, spec: { status: 'done' }, build: { status: 'active' } } }], 0)[0]
+  expect(running?.stage).toBe('build')
+  expect(running?.marker).toEqual({ glyph: '»', tone: 'work' })
+  expect(rowsOf([{ ...sample, stages: {} }], 0)[0]?.marker).toEqual({ glyph: '·' })
+})
+
 test('the pane lists one row per mission from the state folder', async ($, on) => {
   fakeFs(on, [sample])
   await $.command.run(open)

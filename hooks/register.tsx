@@ -45,7 +45,10 @@ export type Row = {
   ticket: string
   tone: MissionTone
   track: Track
+  /** The stage lane word, see stageWordOf. */
+  stage: string
   badge?: Badge
+  marker: Marker
   /** The attention reason, else the note, else the title; on one line. */
   note: string
   /** The Orca terminal handle the user should switch to, when the mission waits on them. */
@@ -130,16 +133,21 @@ export function toneOf(m: Mission): MissionTone {
 export function rowsOf(list: Mission[], now: number): Row[] {
   const rows: Row[] = list
     .filter(m => !isClosed(m))
-    .map(m => ({
-      id: m.id,
-      ticket: m.ticket || m.id,
-      tone: toneOf(m),
-      track: trackOf(m),
-      badge: badgeOf(m),
-      note: (m.attention?.reason || m.note || m.title || '').replace(/\s*\n\s*/g, ' '),
-      terminal: m.attention?.terminal || undefined,
-      age: ageOf(m.updated ?? '', now),
-    }))
+    .map(m => {
+      const badge = badgeOf(m)
+      return {
+        id: m.id,
+        ticket: m.ticket || m.id,
+        tone: toneOf(m),
+        track: trackOf(m),
+        stage: stageWordOf(m),
+        badge,
+        marker: markerOf(badge),
+        note: (m.attention?.reason || m.note || m.title || '').replace(/\s*\n\s*/g, ' '),
+        terminal: m.attention?.terminal || undefined,
+        age: ageOf(m.updated ?? '', now),
+      }
+    })
     .sort((a, b) => TONE_RANK[a.tone] - TONE_RANK[b.tone])
   let key = 0
   for (const row of rows) {
