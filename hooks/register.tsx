@@ -6,20 +6,6 @@ export const PANE = 'pipeline-board'
 let cache: Mission[] = []
 
 const STAGES = ['read', 'spec', 'plan', 'worktree', 'build', 'review', 'pr'] as const
-/** The header over the track: one letter per stage, two cells each. */
-const LETTERS = 'r s p t b v m '
-const GLYPH: Record<StageStatus, string> = {
-  done: '━━',
-  pending: '┄┄',
-  active: '██',
-  waiting_user: '██',
-  failed: '██',
-}
-const COLOR: Partial<Record<StageStatus, string>> = {
-  active: 'cyan',
-  waiting_user: 'yellow',
-  failed: 'red',
-}
 
 /** How a mission reads as a whole: blocked (red) > asking (yellow) > running (green). */
 export type MissionTone = 'running' | 'asking' | 'blocked'
@@ -30,22 +16,15 @@ const TONE_COLOR: Record<MissionTone, string> = {
 }
 
 const TONE_RANK: Record<MissionTone, number> = { blocked: 0, asking: 1, running: 2 }
-/** Badge styles: a filled block for what needs the user, plain cyan for work in progress. */
-const BADGE_STYLE: Record<BadgeTone, { color: string; backgroundColor?: string }> = {
-  fail: { color: 'black', backgroundColor: 'red' },
-  ask: { color: 'black', backgroundColor: 'yellow' },
-  merge: { color: 'black', backgroundColor: 'yellow' },
-  work: { color: 'cyan' },
-}
-const BADGE_WIDTH = 10
-const SELECTED = '#2A2D32'
 
 export type Row = {
   id: string
   ticket: string
   tone: MissionTone
-  track: Track
+  /** The stage lane word, see stageWordOf. */
+  stage: string
   badge?: Badge
+  marker: Marker
   /** The attention reason, else the note, else the title; on one line. */
   note: string
   /** The Orca terminal handle the user should switch to, when the mission waits on them. */
@@ -66,14 +45,35 @@ export function trackOf(m: Mission): Track {
   return STAGES.map(name => (m.stages?.[name]?.status ?? 'pending') as StageStatus)
 }
 
-/** Pure: the one badge a row shows. failed > waiting_user > ready (merge) > active > none. */
+/** Pure: the one badge a row shows. failed > waiting_user > ready (merge) > attention > active > none. */
 export function badgeOf(m: Mission): Badge | undefined {
   const track = trackOf(m)
   if (track.includes('failed')) return { word: 'FAILED', tone: 'fail' }
   if (track.includes('waiting_user')) return { word: 'ASKS', tone: 'ask' }
   if (m.stage === 'ready') return { word: 'MERGE', tone: 'merge' }
+  // An attention handle means the coordinator waits on the user, even while a stage is still active.
+  if (m.attention?.terminal) return { word: 'ASKS', tone: 'ask' }
   if (track.includes('active')) return { word: '⋯ working', tone: 'work' }
   return undefined
+}
+
+const STAGE_WIDTH = 8
+const STAGE_WORD: Record<string, string> = { ready: 'pr', worktree: 'tree' }
+
+/** Pure: the stage lane word, at most STAGE_WIDTH chars. `ready` reads `pr`, `worktree` reads `tree`. */
+export function stageWordOf(m: Mission): string {
+  const word = STAGE_WORD[m.stage] ?? m.stage ?? ''
+  return word.slice(0, STAGE_WIDTH)
+}
+
+export type Marker = { glyph: string; tone?: BadgeTone }
+const MARKER: Record<BadgeTone, string> = { ask: '?', fail: '!', merge: '✓', work: '»' }
+const MARKER_COLOR: Record<BadgeTone, string> = { ask: 'yellow', fail: 'red', merge: 'yellow', work: 'cyan' }
+const LEGEND: Array<[BadgeTone, string]> = [['ask', 'asks'], ['fail', 'failed'], ['merge', 'merge'], ['work', 'working']]
+
+/** Pure: the one-cell status glyph of a row; a row without a badge gets a dim dot. */
+export function markerOf(badge: Badge | undefined): Marker {
+  return badge ? { glyph: MARKER[badge.tone], tone: badge.tone } : { glyph: '·' }
 }
 
 /** Pure: time since `updated` as 0m..59m, 1h..23h, 1d..; empty when `updated` does not parse. */
@@ -113,16 +113,20 @@ export function toneOf(m: Mission): MissionTone {
 export function rowsOf(list: Mission[], now: number): Row[] {
   const rows: Row[] = list
     .filter(m => !isClosed(m))
-    .map(m => ({
-      id: m.id,
-      ticket: m.ticket || m.id,
-      tone: toneOf(m),
-      track: trackOf(m),
-      badge: badgeOf(m),
-      note: (m.attention?.reason || m.note || m.title || '').replace(/\s*\n\s*/g, ' '),
-      terminal: m.attention?.terminal || undefined,
-      age: ageOf(m.updated ?? '', now),
-    }))
+    .map(m => {
+      const badge = badgeOf(m)
+      return {
+        id: m.id,
+        ticket: m.ticket || m.id,
+        tone: toneOf(m),
+        stage: stageWordOf(m),
+        badge,
+        marker: markerOf(badge),
+        note: (m.attention?.reason || m.note || m.title || '').replace(/\s*\n\s*/g, ' '),
+        terminal: m.attention?.terminal || undefined,
+        age: ageOf(m.updated ?? '', now),
+      }
+    })
     .sort((a, b) => TONE_RANK[a.tone] - TONE_RANK[b.tone])
   let key = 0
   for (const row of rows) {
@@ -154,8 +158,6 @@ async function switchTo($: EngineInterface, row: Row) {
 
 const POLL_MS = 3000
 let lastSeen = ''
-/** The mission whose switch Button holds the pane's focus ring; its note is drawn whole. */
-let focusedId: string | undefined
 
 async function rootOf($: EngineInterface, option: string): Promise<string | undefined> {
   if (option.startsWith('/')) return option
@@ -206,16 +208,6 @@ export const register: Register = (on, options) => {
     return { text: 'Pipeline board opened. ctrl+x tab focuses it; a row digit or Enter presses switch.' }
   })
 
-  on('ui.focus', { requestId: PANE }, async ($, e, next) => {
-    // Track which switch Button holds the ring, so its row can draw the whole question.
-    const id = e.element?.startsWith('switch:') ? e.element.slice('switch:'.length) : undefined
-    if (id !== focusedId) {
-      focusedId = id
-      $.ui.invalidate('ui.render')
-    }
-    return next(e)
-  })
-
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const rows = rowsOf(cache, Date.now())
@@ -231,32 +223,28 @@ export const register: Register = (on, options) => {
     const ticketWidth = Math.max(9, ...rows.map(r => r.ticket.length + 1))
     const firstSwitch = rows.findIndex(r => r.terminal)
     const keys = rows.filter(r => r.hotkey).length
-    const focused = e.props.isFocused
     return (
       <Box flexDirection="column">
-        <Text dimColor>{' '.repeat(ticketWidth) + LETTERS}</Text>
         {rows.map((row, i) => {
-          const open = focused && row.id === focusedId
-          const badge = row.badge
-          const word = badge ? (BADGE_STYLE[badge.tone].backgroundColor ? ` ${badge.word} ` : badge.word) : ''
+          const running = row.tone === 'running'
+          const tone = row.marker.tone
           return (
-            <Box flexDirection="column" key={row.id} backgroundColor={open ? SELECTED : undefined}>
-              <Box flexDirection="row">
-                <Text bold color={row.tone === 'running' ? undefined : TONE_COLOR[row.tone]}>
-                  {row.ticket.padEnd(ticketWidth)}
+            <Box flexDirection="row" key={row.id}>
+              {/* Fixed lanes never shrink; only the note gives way to the width. */}
+              <Box flexShrink={0}>
+                <Text bold color={tone ? MARKER_COLOR[tone] : undefined} dimColor={!tone}>
+                  {`${row.marker.glyph} `}
                 </Text>
-                {row.track.map(status => (
-                  <Text color={COLOR[status]} dimColor={!COLOR[status]}>
-                    {GLYPH[status]}
-                  </Text>
-                ))}
+                <Text bold>{row.ticket.padEnd(ticketWidth)}</Text>
+                <Text dimColor={running}>{row.stage.padEnd(STAGE_WIDTH)}</Text>
+              </Box>
+              <Box flexGrow={1}>
+                <Text dimColor={running} wrap="truncate-end">
+                  {row.note}
+                </Text>
+              </Box>
+              <Box flexShrink={0}>
                 <Text> </Text>
-                {badge && (
-                  <Text bold={badge.tone !== 'work'} {...BADGE_STYLE[badge.tone]}>
-                    {word}
-                  </Text>
-                )}
-                <Text>{' '.repeat(Math.max(1, BADGE_WIDTH - word.length))}</Text>
                 {row.terminal ? (
                   <Button
                     key={`switch:${row.id}`}
@@ -268,19 +256,21 @@ export const register: Register = (on, options) => {
                     ⏎
                   </Button>
                 ) : (
-                  <Text dimColor>{row.tone === 'running' ? row.age : ''}</Text>
+                  <Text dimColor>{running ? row.age : ''}</Text>
                 )}
-              </Box>
-              <Box flexDirection="row">
-                <Text>{' '.repeat(ticketWidth)}</Text>
-                <Text dimColor={row.tone === 'running'} wrap={open ? 'wrap' : 'truncate-end'}>
-                  {row.note}
-                </Text>
               </Box>
             </Box>
           )
         })}
-        {focused && (
+        <Text> </Text>
+        <Box flexDirection="row" gap={2}>
+          {LEGEND.map(([tone, word]) => (
+            <Text key={tone} color={MARKER_COLOR[tone]}>
+              {`${MARKER[tone]} ${word}`}
+            </Text>
+          ))}
+        </Box>
+        {e.props.isFocused && (
           <Text dimColor>{`↑↓ move · ⏎ switch${keys ? ` · 1-${keys} jump` : ''} · esc back`}</Text>
         )}
       </Box>

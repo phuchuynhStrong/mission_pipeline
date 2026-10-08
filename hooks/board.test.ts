@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { PANE, ageOf, badgeOf, isClosed, rowsOf, switchArgv, toneOf, trackOf } from './register'
+import { PANE, ageOf, badgeOf, isClosed, markerOf, rowsOf, stageWordOf, switchArgv, toneOf, trackOf } from './register'
 import type { Mission } from '../types'
 
 const sample: Mission = {
@@ -77,6 +77,25 @@ test('badgeOf: failed beats asks beats merge beats working', () => {
   expect(badgeOf({ ...st({ spec: { status: 'done' }, pr: { status: 'active' } }), stage: 'ready' })).toEqual({ word: 'MERGE', tone: 'merge' })
   expect(badgeOf(st({ spec: { status: 'active' } }))).toEqual({ word: '⋯ working', tone: 'work' })
   expect(badgeOf(st({ spec: { status: 'pending' } }))).toBeUndefined()
+  // An attention handle asks even while a stage is still active, so the marker agrees with toneOf.
+  expect(badgeOf({ ...st({ spec: { status: 'active' } }), attention: { terminal: 't', reason: 'r' } })).toEqual({ word: 'ASKS', tone: 'ask' })
+  expect(badgeOf({ ...st({ spec: { status: 'done' }, pr: { status: 'active' } }), stage: 'ready', attention: { terminal: 't', reason: 'r' } })).toEqual({ word: 'MERGE', tone: 'merge' })
+})
+
+test('stageWordOf names the stage lane in at most 8 chars', () => {
+  expect(stageWordOf(sample)).toBe('spec')
+  expect(stageWordOf({ ...sample, stage: 'worktree' })).toBe('tree')
+  expect(stageWordOf({ ...sample, stage: 'ready' })).toBe('pr')
+  expect(stageWordOf({ ...sample, stage: 'integration-x' })).toBe('integrat')
+  expect(stageWordOf({ ...sample, stage: '' })).toBe('')
+})
+
+test('markerOf: one glyph per badge tone, a dot without a badge', () => {
+  expect(markerOf({ word: 'ASKS', tone: 'ask' })).toEqual({ glyph: '?', tone: 'ask' })
+  expect(markerOf({ word: 'FAILED', tone: 'fail' })).toEqual({ glyph: '!', tone: 'fail' })
+  expect(markerOf({ word: 'MERGE', tone: 'merge' })).toEqual({ glyph: '✓', tone: 'merge' })
+  expect(markerOf({ word: '⋯ working', tone: 'work' })).toEqual({ glyph: '»', tone: 'work' })
+  expect(markerOf(undefined)).toEqual({ glyph: '·' })
 })
 
 test('ageOf counts minutes, hours and days since updated', () => {
@@ -132,6 +151,16 @@ test('rowsOf note falls back from attention reason to note to title, on one line
   expect(rowsOf([{ ...sample, attention: { terminal: 't', reason: 'SMS or\nlock?' } }], 0)[0]?.note).toBe('SMS or lock?')
   expect(rowsOf([sample], 0)[0]?.note).toBe('brainstorm with senior')
   expect(rowsOf([{ ...sample, note: '' }], 0)[0]?.note).toBe('secondary phone')
+})
+
+test('rowsOf carries the stage word and the marker', () => {
+  const [row] = rowsOf([sample], 0)
+  expect(row?.stage).toBe('spec')
+  expect(row?.marker).toEqual({ glyph: '?', tone: 'ask' })
+  const running = rowsOf([{ ...sample, stage: 'build', stages: { ...sample.stages, spec: { status: 'done' }, build: { status: 'active' } } }], 0)[0]
+  expect(running?.stage).toBe('build')
+  expect(running?.marker).toEqual({ glyph: '»', tone: 'work' })
+  expect(rowsOf([{ ...sample, stages: {} }], 0)[0]?.marker).toEqual({ glyph: '·' })
 })
 
 test('the pane lists one row per mission from the state folder', async ($, on) => {
@@ -192,12 +221,29 @@ test('only a focused pane draws the key footer', async ($, on) => {
   expect(await focused.find({ text: footer })).toBeDefined()
 })
 
-test('the pane draws the stage letters and the badge word', async ($, on) => {
-  fakeFs(on, [sample])
+test('the pane draws the marker, the stage word and the legend', async ($, on) => {
+  fakeFs(on, [sample, { ...sample, id: 'wbs-2', ticket: 'WBS-2', stages: {} }])
   await $.command.run(open)
   const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
-  expect(await ui.find({ text: /r s p t b v m/ })).toBeDefined()
-  expect(await ui.find({ text: ' ASKS ' })).toBeDefined()
+  // Exact matches, so the legend's '? asks' cannot stand in for a row marker.
+  expect(await ui.find({ type: 'Text', text: /^\? $/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^· $/ })).toBeDefined()
+  expect(await ui.find({ text: /^spec\s*$/ })).toBeDefined()
+  expect(await ui.find({ text: '? asks' })).toBeDefined()
+  expect(await ui.find({ text: '» working' })).toBeDefined()
+  expect(await ui.find({ text: /r s p t b v m/ })).toBeUndefined()
+})
+
+test('a long ticket and a long note keep the switch button on the row', async ($, on) => {
+  const reason = 'Fall back to SMS if TOTP fails, or lock the account after three tries?'
+  fakeFs(on, [{ ...sample, id: 'wbs-123456789', ticket: 'WBS-123456789', attention: { terminal: 'term_42', reason } }])
+  await $.command.run(open)
+  const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props: { ...props, bodyColumns: 40 } })
+  expect(await ui.find({ key: 'switch:wbs-123456789' })).toBeDefined()
+  // The ticket lane widens to the longest ticket plus one cell, so every row shares one lane.
+  expect(await ui.find({ type: 'Text', text: /^WBS-123456789 $/ })).toBeDefined()
+  const note = (await ui.findAll({ type: 'Text', text: reason }))[0]
+  expect(note?.props.wrap).toBe('truncate-end')
 })
 
 test('/pboard asks for the keyboard', async ($, on) => {
@@ -219,20 +265,4 @@ test('the pane says so when no mission exists', async ($, on) => {
   await $.command.run(open)
   const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
   expect(await ui.find({ text: 'No open missions.' })).toBeDefined()
-})
-
-test('the row whose switch holds the focus draws its whole note', async ($, on) => {
-  const reason = 'Fall back to SMS if TOTP fails, or lock the account?'
-  fakeFs(on, [{ ...sample, attention: { terminal: 'term_42', reason } }])
-  on('ui.focus', async () => ({}))
-  await $.command.run(open)
-  const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props: { ...props, isFocused: true } })
-  const note = async () => (await ui.findAll({ type: 'Text', text: reason }))[0]?.props.wrap
-  expect(await note()).toBe('truncate-end')
-  await $.ui.focus({ component: 'Pane', requestId: PANE, element: 'switch:wbs-12345', origin: { kind: 'person' } })
-  await ui.redraw()
-  expect(await note()).toBe('wrap')
-  await $.ui.focus({ component: 'Pane', requestId: PANE, origin: { kind: 'person' } })
-  await ui.redraw()
-  expect(await note()).toBe('truncate-end')
 })

@@ -207,12 +207,13 @@ the paths.
 
 ## Board
 
-`/pboard` opens the pane this skill ships (`hooks/`). One row per mission: a track of the stages
-`r s p t b v m` (read › spec › plan › tree › build › review › pr), filled by the state file, and one
-badge: `FAILED`, `ASKS`, `MERGE` (`ready`) or `⋯ working`. The second line is `attention.reason`, else
-`note`. Rows that need the user come first: red ticket when a stage `failed`, yellow while it waits on
-the user (`waiting_user`, `attention`, `ready`), then running rows with the time since `updated`. A
-row with `attention` carries a switch button. A `ready` mission stays
+`/pboard` opens the pane this skill ships (`hooks/`). One line per mission: a status glyph (`?`
+asks, `!` failed, `✓` merge-ready, `»` working, `·` idle), the ticket, the stage word (`read`,
+`spec`, `plan`, `tree`, `build`, `review`, `pr`), then `attention.reason`, else `note`, cut to the
+line. Rows that need the user come first: `!` when a stage `failed`, `?` or `✓` while it waits on
+the user (`waiting_user`, `attention`, `ready`), then running rows with the time since `updated` at
+the right edge. A legend line sits under the rows. A row with `attention` carries a switch button
+(`1: ⏎`, its hotkey digit then Enter). A `ready` mission stays
 listed until `state.py done` (PR merged or the user's word). Done and aborted missions are
 hidden; `state.py list --all` still shows them. Orca's own app shows
 the Run, Tasks and Dispatches; the board shows the mission stages.
