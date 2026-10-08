@@ -48,6 +48,37 @@ export type Row = {
   terminal?: string
 }
 
+/** One status per STAGES item, in order. */
+export type Track = StageStatus[]
+export type BadgeTone = 'ask' | 'fail' | 'merge' | 'work'
+export type Badge = { word: string; tone: BadgeTone }
+
+/** Pure: the status of each pipeline stage; a missing stage is pending. */
+export function trackOf(m: Mission): Track {
+  return STAGES.map(name => (m.stages?.[name]?.status ?? 'pending') as StageStatus)
+}
+
+/** Pure: the one badge a row shows. failed > waiting_user > ready (merge) > active > none. */
+export function badgeOf(m: Mission): Badge | undefined {
+  const track = trackOf(m)
+  if (track.includes('failed')) return { word: 'FAILED', tone: 'fail' }
+  if (track.includes('waiting_user')) return { word: 'ASKS', tone: 'ask' }
+  if (m.stage === 'ready') return { word: 'MERGE', tone: 'merge' }
+  if (track.includes('active')) return { word: '⋯ working', tone: 'work' }
+  return undefined
+}
+
+/** Pure: time since `updated` as 0m..59m, 1h..23h, 1d..; empty when `updated` does not parse. */
+export function ageOf(updated: string, now: number): string {
+  const at = Date.parse(updated)
+  if (Number.isNaN(at)) return ''
+  const minutes = Math.max(0, Math.floor((now - at) / 60000))
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  return `${Math.floor(hours / 24)}d`
+}
+
 const TERMINAL = new Set(['done', 'aborted'])
 
 /** Pure: a mission the coordinator no longer drives. */

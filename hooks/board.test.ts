@@ -1,7 +1,7 @@
 import { test, expect } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { PANE, isClosed, rowsOf, switchArgv, toneOf } from './register'
+import { PANE, ageOf, badgeOf, isClosed, rowsOf, switchArgv, toneOf, trackOf } from './register'
 import type { Mission } from '../types'
 
 const sample: Mission = {
@@ -62,6 +62,32 @@ const props = {
   scroll: { offset: 0, bodyRows: 20 },
   view: {},
 }
+
+test('trackOf returns one status per stage', () => {
+  expect(trackOf(sample)).toEqual(['done', 'waiting_user', 'pending', 'pending', 'pending', 'pending', 'pending'])
+  expect(trackOf({ ...sample, stages: {} })).toEqual(Array(7).fill('pending'))
+  expect(trackOf({ ...sample, stages: undefined as unknown as Mission['stages'] })).toEqual(Array(7).fill('pending'))
+  expect(trackOf({ ...sample, stages: { ...sample.stages, ready: { status: 'active' } } })).toHaveLength(7)
+})
+
+test('badgeOf: failed beats asks beats merge beats working', () => {
+  const st = (over: Mission['stages']) => ({ ...sample, stages: { ...sample.stages, ...over } })
+  expect(badgeOf(st({ build: { status: 'failed' } }))).toEqual({ word: 'FAILED', tone: 'fail' })
+  expect(badgeOf(sample)).toEqual({ word: 'ASKS', tone: 'ask' })
+  expect(badgeOf({ ...st({ spec: { status: 'done' }, pr: { status: 'active' } }), stage: 'ready' })).toEqual({ word: 'MERGE', tone: 'merge' })
+  expect(badgeOf(st({ spec: { status: 'active' } }))).toEqual({ word: '⋯ working', tone: 'work' })
+  expect(badgeOf(st({ spec: { status: 'pending' } }))).toBeUndefined()
+})
+
+test('ageOf counts minutes, hours and days since updated', () => {
+  const at = Date.parse('2026-10-06T10:00:00+10:00')
+  expect(ageOf('2026-10-06T10:00:00+10:00', at)).toBe('0m')
+  expect(ageOf('2026-10-06T10:00:00+10:00', at + 59 * 60000)).toBe('59m')
+  expect(ageOf('2026-10-06T10:00:00+10:00', at + 60 * 60000)).toBe('1h')
+  expect(ageOf('2026-10-06T10:00:00+10:00', at + 24 * 3600000)).toBe('1d')
+  expect(ageOf('', at)).toBe('')
+  expect(ageOf('not a date', at)).toBe('')
+})
 
 test('rowsOf marks each stage by its status', () => {
   const row = rowsOf([sample], 100)[0]!
