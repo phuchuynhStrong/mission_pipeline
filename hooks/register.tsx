@@ -206,6 +206,16 @@ export const register: Register = (on, options) => {
     return { text: 'Pipeline board opened. ctrl+x tab focuses it; a row digit or Enter presses switch.' }
   })
 
+  on('ui.focus', { requestId: PANE }, async ($, e, next) => {
+    // Track which switch Button holds the ring, so its row can draw the whole question.
+    const id = e.element?.startsWith('switch:') ? e.element.slice('switch:'.length) : undefined
+    if (id !== focusedId) {
+      focusedId = id
+      $.ui.invalidate('ui.render')
+    }
+    return next(e)
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const rows = rowsOf(cache, Date.now())

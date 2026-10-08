@@ -220,3 +220,19 @@ test('the pane says so when no mission exists', async ($, on) => {
   const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
   expect(await ui.find({ text: 'No open missions.' })).toBeDefined()
 })
+
+test('the row whose switch holds the focus draws its whole note', async ($, on) => {
+  const reason = 'Fall back to SMS if TOTP fails, or lock the account?'
+  fakeFs(on, [{ ...sample, attention: { terminal: 'term_42', reason } }])
+  on('ui.focus', async () => ({}))
+  await $.command.run(open)
+  const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props: { ...props, isFocused: true } })
+  const note = async () => (await ui.findAll({ type: 'Text', text: reason }))[0]?.props.wrap
+  expect(await note()).toBe('truncate-end')
+  await $.ui.focus({ component: 'Pane', requestId: PANE, element: 'switch:wbs-12345', origin: { kind: 'person' } })
+  await ui.redraw()
+  expect(await note()).toBe('wrap')
+  await $.ui.focus({ component: 'Pane', requestId: PANE, origin: { kind: 'person' } })
+  await ui.redraw()
+  expect(await note()).toBe('truncate-end')
+})
