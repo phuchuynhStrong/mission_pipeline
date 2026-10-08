@@ -18,7 +18,7 @@ must be able to type into the senior's terminal, and only Orca workers have one.
 
 | Role | Agent | `--model` | `--effort` | Worktree | Reads | Reports (`worker_done`) |
 |---|---|---|---|---|---|---|
-| reader (1..N) | claude | sonnet | medium | current (or an exact registered repo) | mission.md | `--report-path` readings file |
+| reader (1..N) | claude | claude-haiku-5-5 | high | current (or an exact registered repo) | mission.md | `--report-path` readings file |
 | senior | claude | opus | high | current | mission.md + readings | `--report-path` spec path |
 | planner | claude | opus | medium | current | spec | `--report-path` plan path, body `tasks: N; parallel: yes/no; spec-is-plan: yes/no` |
 | implementer | claude | opus | low | mission worktree | plan (one task) or review report (fix round) | `--outcome`, `--files-modified` |

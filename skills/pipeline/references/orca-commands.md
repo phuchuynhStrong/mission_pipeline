@@ -10,14 +10,14 @@ orca orchestration run-use --id <run_id> --json          # rebind: one coordinat
 
 # readers, senior, planner: current worktree
 orca orchestration worker-start --spec "<spec text>" --task-title "<role> <id>" \
-  --worktree current --agent claude --model sonnet --effort medium --json   # reader
+  --worktree current --agent claude --model claude-haiku-5-5 --effort high --json   # reader
 orca orchestration worker-start --spec "..." --task-title "senior <id>" \
   --worktree current --agent claude --model opus --effort high --json
 orca orchestration worker-start --spec "..." --task-title "planner <id>" \
   --worktree current --agent claude --model opus --effort medium --json
 # a reader on another registered repo (e.g. the backend): exact workspace, never `current`
 orca orchestration worker-start --spec "..." --task-title "reader <angle> <id>" \
-  --worktree path:/abs/path/of/registered/repo --agent claude --model sonnet --effort medium --json
+  --worktree path:/abs/path/of/registered/repo --agent claude --model claude-haiku-5-5 --effort high --json
 
 # worktree after the plan
 orca worktree create --name <id> --base-branch <base> --json                 # -> path

@@ -21,7 +21,7 @@ Mission text: {mission_path}.
 Change: write a findings file at {readings_path} that answers, for this angle only: which
 files and symbols are involved (path:line), how the current behaviour works, what the mission
 would have to touch, and what you could not verify. Cite every claim as path:line or mark it
-INFERRED. No code changes.
+INFERRED. No code changes. Read only this worktree's HEAD; do not read other branches.
 Ownership: only {readings_path}.
 Observable acceptance: the file exists, every section cites file:line, and your worker_done
 carries --report-path {readings_path} --outcome succeeded.
