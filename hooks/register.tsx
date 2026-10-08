@@ -6,21 +6,14 @@ export const PANE = 'pipeline-board'
 let cache: Mission[] = []
 
 const STAGES = ['read', 'spec', 'plan', 'worktree', 'build', 'review', 'pr'] as const
-const LABEL: Record<string, [wide: string, narrow: string]> = {
-  read: ['read', 'R'],
-  spec: ['spec', 'S'],
-  plan: ['plan', 'P'],
-  worktree: ['tree', 'T'],
-  build: ['build', 'B'],
-  review: ['review', 'V'],
-  pr: ['pr', 'M'],
-}
-const MARK: Record<StageStatus, string> = {
-  pending: '□',
-  active: '▣',
-  waiting_user: '✱',
-  done: '■',
-  failed: '✖',
+/** The header over the track: one letter per stage, two cells each. */
+const LETTERS = 'r s p t b v m '
+const GLYPH: Record<StageStatus, string> = {
+  done: '━━',
+  pending: '┄┄',
+  active: '██',
+  waiting_user: '██',
+  failed: '██',
 }
 const COLOR: Partial<Record<StageStatus, string>> = {
   active: 'cyan',
@@ -36,16 +29,62 @@ const TONE_COLOR: Record<MissionTone, string> = {
   blocked: 'red',
 }
 
-export type Cell = { label: string; mark: string; status: StageStatus }
+const TONE_RANK: Record<MissionTone, number> = { blocked: 0, asking: 1, running: 2 }
+/** Badge styles: a filled block for what needs the user, plain cyan for work in progress. */
+const BADGE_STYLE: Record<BadgeTone, { color: string; backgroundColor?: string }> = {
+  fail: { color: 'black', backgroundColor: 'red' },
+  ask: { color: 'black', backgroundColor: 'yellow' },
+  merge: { color: 'black', backgroundColor: 'yellow' },
+  work: { color: 'cyan' },
+}
+const BADGE_WIDTH = 10
+const SELECTED = '#2A2D32'
+
 export type Row = {
   id: string
   ticket: string
-  title: string
-  cells: Cell[]
-  note: string
   tone: MissionTone
+  track: Track
+  badge?: Badge
+  /** The attention reason, else the note, else the title; on one line. */
+  note: string
   /** The Orca terminal handle the user should switch to, when the mission waits on them. */
   terminal?: string
+  /** '1'..'9' on rows with a terminal, in display order. */
+  hotkey?: string
+  /** Time since the last update; the board shows it on running rows. */
+  age: string
+}
+
+/** One status per STAGES item, in order. */
+export type Track = StageStatus[]
+export type BadgeTone = 'ask' | 'fail' | 'merge' | 'work'
+export type Badge = { word: string; tone: BadgeTone }
+
+/** Pure: the status of each pipeline stage; a missing stage is pending. */
+export function trackOf(m: Mission): Track {
+  return STAGES.map(name => (m.stages?.[name]?.status ?? 'pending') as StageStatus)
+}
+
+/** Pure: the one badge a row shows. failed > waiting_user > ready (merge) > active > none. */
+export function badgeOf(m: Mission): Badge | undefined {
+  const track = trackOf(m)
+  if (track.includes('failed')) return { word: 'FAILED', tone: 'fail' }
+  if (track.includes('waiting_user')) return { word: 'ASKS', tone: 'ask' }
+  if (m.stage === 'ready') return { word: 'MERGE', tone: 'merge' }
+  if (track.includes('active')) return { word: '⋯ working', tone: 'work' }
+  return undefined
+}
+
+/** Pure: time since `updated` as 0m..59m, 1h..23h, 1d..; empty when `updated` does not parse. */
+export function ageOf(updated: string, now: number): string {
+  const at = Date.parse(updated)
+  if (Number.isNaN(at)) return ''
+  const minutes = Math.max(0, Math.floor((now - at) / 60000))
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h`
+  return `${Math.floor(hours / 24)}d`
 }
 
 const TERMINAL = new Set(['done', 'aborted'])
@@ -66,22 +105,30 @@ export function toneOf(m: Mission): MissionTone {
   return 'running'
 }
 
-/** Pure: state rows to board rows; closed (done or aborted) missions are left out. `columns` is the pane body width in cells. */
-export function rowsOf(list: Mission[], columns: number): Row[] {
-  const narrow = columns < 70
-  return list.filter(m => !isClosed(m)).map(m => ({
-    id: m.id,
-    ticket: m.ticket || m.id,
-    title: m.title,
-    note: m.note,
-    tone: toneOf(m),
-    terminal: m.attention?.terminal || undefined,
-    cells: STAGES.map(name => {
-      const status = (m.stages?.[name]?.status ?? 'pending') as StageStatus
-      const label = LABEL[name]
-      return { label: (narrow ? label?.[1] : label?.[0]) ?? name, mark: MARK[status] ?? '□', status }
-    }),
-  }))
+/**
+ * Pure: state rows to board rows. Closed (done or aborted) missions are left out; the rest
+ * sort blocked, then asking, then running, keeping the incoming order inside a tone. Rows
+ * with a terminal get hotkeys 1..9 in that order.
+ */
+export function rowsOf(list: Mission[], now: number): Row[] {
+  const rows: Row[] = list
+    .filter(m => !isClosed(m))
+    .map(m => ({
+      id: m.id,
+      ticket: m.ticket || m.id,
+      tone: toneOf(m),
+      track: trackOf(m),
+      badge: badgeOf(m),
+      note: (m.attention?.reason || m.note || m.title || '').replace(/\s*\n\s*/g, ' '),
+      terminal: m.attention?.terminal || undefined,
+      age: ageOf(m.updated ?? '', now),
+    }))
+    .sort((a, b) => TONE_RANK[a.tone] - TONE_RANK[b.tone])
+  let key = 0
+  for (const row of rows) {
+    if (row.terminal && key < 9) row.hotkey = String(++key)
+  }
+  return rows
 }
 
 /** Pure: the argv that brings the user to a worker's terminal. */
@@ -107,6 +154,8 @@ async function switchTo($: EngineInterface, row: Row) {
 
 const POLL_MS = 3000
 let lastSeen = ''
+/** The mission whose switch Button holds the pane's focus ring; its note is drawn whole. */
+let focusedId: string | undefined
 
 async function rootOf($: EngineInterface, option: string): Promise<string | undefined> {
   if (option.startsWith('/')) return option
@@ -157,51 +206,82 @@ export const register: Register = (on, options) => {
     return { text: 'Pipeline board opened. ctrl+x tab focuses it; a row digit or Enter presses switch.' }
   })
 
+  on('ui.focus', { requestId: PANE }, async ($, e, next) => {
+    // Track which switch Button holds the ring, so its row can draw the whole question.
+    const id = e.element?.startsWith('switch:') ? e.element.slice('switch:'.length) : undefined
+    if (id !== focusedId) {
+      focusedId = id
+      $.ui.invalidate('ui.render')
+    }
+    return next(e)
+  })
+
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
-    const rows = rowsOf(cache, e.props.bodyColumns ?? 80)
-    const ticketWidth = Math.max(8, ...rows.map(r => r.ticket.length))
-    const firstSwitch = rows.findIndex(r => r.terminal)
-    const showHint = firstSwitch >= 0 && !e.props.isFocused
+    const rows = rowsOf(cache, Date.now())
 
     if (rows.length === 0) {
       return (
         <Box flexDirection="column">
-          <Text dimColor>No missions yet.</Text>
+          <Text>No open missions.</Text>
+          <Text dimColor>/pipeline &lt;ticket&gt; starts one.</Text>
         </Box>
       )
     }
+    const ticketWidth = Math.max(9, ...rows.map(r => r.ticket.length + 1))
+    const firstSwitch = rows.findIndex(r => r.terminal)
+    const keys = rows.filter(r => r.hotkey).length
+    const focused = e.props.isFocused
     return (
       <Box flexDirection="column">
-        {rows.map((row, i) => (
-          <Box flexDirection="column" key={row.ticket}>
-            <Box flexDirection="row" columnGap={1}>
-              <Text bold color={TONE_COLOR[row.tone]}>{row.ticket.padEnd(ticketWidth)}</Text>
-              {row.cells.map(cell => (
-                <Text color={COLOR[cell.status]} dimColor={cell.status === 'pending'}>
-                  {cell.label} {cell.mark}
+        <Text dimColor>{' '.repeat(ticketWidth) + LETTERS}</Text>
+        {rows.map((row, i) => {
+          const open = focused && row.id === focusedId
+          const badge = row.badge
+          const word = badge ? (BADGE_STYLE[badge.tone].backgroundColor ? ` ${badge.word} ` : badge.word) : ''
+          return (
+            <Box flexDirection="column" key={row.id} backgroundColor={open ? SELECTED : undefined}>
+              <Box flexDirection="row">
+                <Text bold color={row.tone === 'running' ? undefined : TONE_COLOR[row.tone]}>
+                  {row.ticket.padEnd(ticketWidth)}
                 </Text>
-              ))}
-              {row.terminal && (
-                <Button
-                  key={`switch:${row.id}`}
-                  hotkey={i < 9 ? String(i + 1) : undefined}
-                  plain
-                  autoFocus={i === firstSwitch ? true : undefined}
-                  onPress={() => void switchTo($, row)}
-                >
-                  switch
-                </Button>
-              )}
+                {row.track.map(status => (
+                  <Text color={COLOR[status]} dimColor={!COLOR[status]}>
+                    {GLYPH[status]}
+                  </Text>
+                ))}
+                <Text> </Text>
+                {badge && (
+                  <Text bold={badge.tone !== 'work'} {...BADGE_STYLE[badge.tone]}>
+                    {word}
+                  </Text>
+                )}
+                <Text>{' '.repeat(Math.max(1, BADGE_WIDTH - word.length))}</Text>
+                {row.terminal ? (
+                  <Button
+                    key={`switch:${row.id}`}
+                    hotkey={row.hotkey}
+                    plain
+                    autoFocus={i === firstSwitch ? true : undefined}
+                    onPress={() => void switchTo($, row)}
+                  >
+                    ⏎
+                  </Button>
+                ) : (
+                  <Text dimColor>{row.tone === 'running' ? row.age : ''}</Text>
+                )}
+              </Box>
+              <Box flexDirection="row">
+                <Text>{' '.repeat(ticketWidth)}</Text>
+                <Text dimColor={row.tone === 'running'} wrap={open ? 'wrap' : 'truncate-end'}>
+                  {row.note}
+                </Text>
+              </Box>
             </Box>
-            <Box flexDirection="row">
-              <Text>{' '.repeat(ticketWidth + 1)}</Text>
-              <Text dimColor wrap="truncate-end">{row.note || row.title}</Text>
-            </Box>
-          </Box>
-        ))}
-        {showHint && (
-          <Text dimColor>ctrl+x tab focuses the board; then the row digit or Enter presses switch</Text>
+          )
+        })}
+        {focused && (
+          <Text dimColor>{`↑↓ move · ⏎ switch${keys ? ` · 1-${keys} jump` : ''} · esc back`}</Text>
         )}
       </Box>
     )

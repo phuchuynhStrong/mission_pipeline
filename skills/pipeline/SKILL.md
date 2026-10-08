@@ -147,7 +147,7 @@ plus the ids and paths the receipt gave (`run_id=`, `stages.spec.path=`, `stages
 **Attention = a terminal the user should open.** Whenever you tell the user a terminal handle
 (senior brainstorm, implementer `failed`, reviewer or greptile `NEEDS_USER`, an `escalation`),
 set it in the same `state.py set`: `attention.terminal=<handle> attention.reason="<one line>"`.
-The board turns that into a `switch` button (hotkey = row number) that runs `orca terminal
+The board turns that into a switch button (hotkeys 1..9 down the switch rows) that runs `orca terminal
 switch`. Clear it with `attention=null` in the `set` that records the stage moving on or the
 user's answer.
 
@@ -207,10 +207,12 @@ the paths.
 
 ## Board
 
-`/pboard` opens the pane this skill ships (`hooks/`). One row per mission:
-`read › spec › plan › tree › build › review › pr`, filled by the state file. The ticket is green while
-the pipeline runs, yellow while it waits on the user (`waiting_user`, `attention`, `ready`), red
-when a stage `failed`. A row with `attention` carries a `switch` button. A `ready` mission stays
+`/pboard` opens the pane this skill ships (`hooks/`). One row per mission: a track of the stages
+`r s p t b v m` (read › spec › plan › tree › build › review › pr), filled by the state file, and one
+badge: `FAILED`, `ASKS`, `MERGE` (`ready`) or `⋯ working`. The second line is `attention.reason`, else
+`note`. Rows that need the user come first: red ticket when a stage `failed`, yellow while it waits on
+the user (`waiting_user`, `attention`, `ready`), then running rows with the time since `updated`. A
+row with `attention` carries a switch button. A `ready` mission stays
 listed until `state.py done` (PR merged or the user's word). Done and aborted missions are
 hidden; `state.py list --all` still shows them. Orca's own app shows
 the Run, Tasks and Dispatches; the board shows the mission stages.
