@@ -218,12 +218,26 @@ test('only a focused pane draws the key footer', async ($, on) => {
   expect(await focused.find({ text: footer })).toBeDefined()
 })
 
-test('the pane draws the stage letters and the badge word', async ($, on) => {
-  fakeFs(on, [sample])
+test('the pane draws the marker, the stage word and the legend', async ($, on) => {
+  fakeFs(on, [sample, { ...sample, id: 'wbs-2', ticket: 'WBS-2', stages: {} }])
   await $.command.run(open)
   const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
-  expect(await ui.find({ text: /r s p t b v m/ })).toBeDefined()
-  expect(await ui.find({ text: ' ASKS ' })).toBeDefined()
+  expect(await ui.find({ text: '? ' })).toBeDefined()
+  expect(await ui.find({ text: '· ' })).toBeDefined()
+  expect(await ui.find({ text: /^spec\s*$/ })).toBeDefined()
+  expect(await ui.find({ text: '? asks' })).toBeDefined()
+  expect(await ui.find({ text: '» working' })).toBeDefined()
+  expect(await ui.find({ text: /r s p t b v m/ })).toBeUndefined()
+})
+
+test('a long ticket and a long note keep the switch button on the row', async ($, on) => {
+  const reason = 'Fall back to SMS if TOTP fails, or lock the account after three tries?'
+  fakeFs(on, [{ ...sample, id: 'wbs-123456789', ticket: 'WBS-123456789', attention: { terminal: 'term_42', reason } }])
+  await $.command.run(open)
+  const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props: { ...props, bodyColumns: 40 } })
+  expect(await ui.find({ key: 'switch:wbs-123456789' })).toBeDefined()
+  const note = (await ui.findAll({ type: 'Text', text: reason }))[0]
+  expect(note?.props.wrap).toBe('truncate-end')
 })
 
 test('/pboard asks for the keyboard', async ($, on) => {
@@ -245,20 +259,4 @@ test('the pane says so when no mission exists', async ($, on) => {
   await $.command.run(open)
   const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
   expect(await ui.find({ text: 'No open missions.' })).toBeDefined()
-})
-
-test('the row whose switch holds the focus draws its whole note', async ($, on) => {
-  const reason = 'Fall back to SMS if TOTP fails, or lock the account?'
-  fakeFs(on, [{ ...sample, attention: { terminal: 'term_42', reason } }])
-  on('ui.focus', async () => ({}))
-  await $.command.run(open)
-  const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props: { ...props, isFocused: true } })
-  const note = async () => (await ui.findAll({ type: 'Text', text: reason }))[0]?.props.wrap
-  expect(await note()).toBe('truncate-end')
-  await $.ui.focus({ component: 'Pane', requestId: PANE, element: 'switch:wbs-12345', origin: { kind: 'person' } })
-  await ui.redraw()
-  expect(await note()).toBe('wrap')
-  await $.ui.focus({ component: 'Pane', requestId: PANE, origin: { kind: 'person' } })
-  await ui.redraw()
-  expect(await note()).toBe('truncate-end')
 })
