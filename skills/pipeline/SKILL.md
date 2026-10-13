@@ -36,6 +36,11 @@ a `NEEDS_USER` outcome (reviewer, greptile reviewer) or an implementer gap, beca
 must read it; and an implementer that will be reused for the next task (`parallel: no`),
 released after its last task. `events+="released <role> <handle>"` each time.
 
+**Every Dispatch is recorded on its mission.** Every `worker-start` carries `--run <shared>`
+(Waiting); in the `state.py set` that records the receipt, add `dispatches+=<dispatchId>`
+(also for a reused terminal: it is a new Dispatch). In the `set` that accepts a
+`worker_done`, add `settled+=<dispatchId>`. This is how one wait serves every mission.
+
 ## Places
 
 | Thing | Where |
@@ -46,25 +51,39 @@ released after its last task. `events+="released <role> <handle>"` each time.
 | mission text, readings | `<scratchpad>/pipeline/<id>/mission.md`, `.../readings/<angle>.md` |
 | review reports | `.../review.md`, `.../review-2.md`, ... (one per round) |
 | PR body, Greptile report | `.../pr-body.md` (written by the reviewer), its split `.../pr-title.txt` + `.../pr-body-rest.md`, `.../greptile-review.md` |
-| inbox, watcher outputs | `.../inbox.json`, `.../pr.json`, `.../pr-final.json` |
+| inbox | `<scratchpad>/pipeline/inbox.json`: one per session, shared by every mission |
+| watcher outputs | `.../pr.json`, `.../pr-final.json` |
+| saved Run | `~/.claude/pipeline/coordinator.json`, one per machine, read and written only with `state.py run` |
 | spec | `<repo>/docs/superpowers/specs/YYYY-MM-DD-<id>-<slug>-design.md`; from step 5 on, the same relative path in the worktree |
 | plan | `<repo>/docs/superpowers/plans/YYYY-MM-DD-<id>-<slug>.md`; from step 5 on, the same relative path in the worktree |
-| state (git-free) | `~/.claude/pipeline/<repo-basename>/<id>.json`, written only with `python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py` (`new`, `set`, `done`, `abort`, `show`, `list`) |
+| state (git-free) | `~/.claude/pipeline/<repo-basename>/<id>.json`, written only with `python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py` (`new`, `set`, `done`, `abort`, `show`, `list`, `run`, `owner`) |
 | worktree | `orca worktree create --name <id> --base-branch <base>`; branch `feature/<id>-<slug>` |
 
 ## Loop
 
 1. **Intake.** Get the ticket text (orca-linear skill if it is a Linear id). Parse `--base
    <branch>` from the arguments (default: the repo's default branch). Write `mission.md`.
-   `state.py new ... --base-branch <base>`, then `state.py set ... owner_repo=<owner/repo>`. `orca status --json`, then `run-create` and store
-   `run_id`. Open the board: `/pboard`.
+   `orca status --json`, then **Binding** (below) → `<shared>`. Then
+   `state.py new ... --base-branch <base> --run-id <shared>`, then `state.py set ... owner_repo=<owner/repo>`.
+   Open the board: `/pboard`. No mission creates its own Run.
+
+   **Binding** (once per session: the first `/pipeline`, or the first turn after a restart in
+   which any open mission has a live worker; again only on the user's word):
+   1. `state.py run` → saved id. Non-zero exit: tell the user the path and stop; no wait is
+      possible without a Run.
+   2. Saved id and `run-current` already shows it → bound.
+   3. Saved id → `run-show --id <id>`. Found → `run-use --id <id>`; any `run-use` error: tell
+      the user the code and stop. `error.code` `run_not_found` → step 4. Any other `run-show`
+      error: tell the user the code and stop. Never create a new Run silently.
+   4. No saved id, or `run_not_found` → `run-create --objective "pipeline coordinator"`, then
+      `state.py run --set <run_id>`.
 2. **Read.** Pick 1 to 4 reader angles from the mission text (UI, data, patterns, tests). Start
-   all readers in one wave, `--worktree current`, arm the wait (Waiting) and end the turn. On
+   all readers in one wave, `--worktree current`, arm the wait if none is running (Waiting) and end the turn. On
    each `worker_done` record the path and release that reader. Continue when every reader is
    released.
 3. **Spec.** Start the senior with mission + readings paths and the spec destination. Rename its
-   terminal `senior <id>`. Set `stages.spec.status=waiting_user`, `note="brainstorm with senior"`, `attention.terminal=<h>`, `attention.reason="brainstorm with senior"`, and tell the user `orca terminal switch --terminal <h>`, arm the wait and end the turn. On `worker_done` record the spec path, set `attention=null`, and close the senior's terminal (release, then `terminal close` on `retained`).
-4. **Plan.** Start the planner with the spec path and plan destination, arm the wait. On `worker_done` parse
+   terminal `senior <id>`. Set `stages.spec.status=waiting_user`, `note="brainstorm with senior"`, `attention.terminal=<h>`, `attention.reason="brainstorm with senior"`, and tell the user `orca terminal switch --terminal <h>`, arm the wait if none is running and end the turn. On `worker_done` record the spec path, set `attention=null`, and close the senior's terminal (release, then `terminal close` on `retained`).
+4. **Plan.** Start the planner with the spec path and plan destination, arm the wait if none is running. On `worker_done` parse
    the body line into `stages.plan.tasks`, `stages.plan.parallel`; if `spec-is-plan: yes`, the plan
    path is the spec path. Release the planner.
 5. **Worktree.** Ticket first (skip with no ticket): `orca linear issue <TICKET> --json`; if the
@@ -80,21 +99,22 @@ released after its last task. `events+="released <role> <handle>"` each time.
    <file>`: exit 1 (untracked) → `rm` it; exit 0 (tracked) or any other exit → keep it and tell
    the user. Then `state.py set ... stages.spec.path=<worktree>/<rel> stages.plan.path=<worktree>/<rel>
    events+="moved spec and plan to worktree"`; steps 6 to 8 pass these worktree paths. Record path and
-   branch. Confirm `worker-list --run <run_id> --terminal-state reclaimable` is empty; release
-   anything it still lists.
+   branch. Confirm no Dispatch of this mission is still reclaimable: `worker-show --dispatch <id>`
+   for each id in its `dispatches` that is not released; release anything still reclaimable.
+   Other missions' workers on the shared Run are never touched.
 6. **Build.** `parallel: no` → one implementer, task 1; on `succeeded` reuse its terminal
    (`--terminal <handle>`) for task 2, and so on. `parallel: yes` → one implementer per task in one
-   wave, all `--worktree name:<id>`. Arm the wait after every start. Update `stages.build.done` after each. Release an
+   wave, all `--worktree name:<id>`. Arm the wait after every start if none is running. Update `stages.build.done` after each. Release an
    implementer when its last task `succeeded` (parallel: each on its own `worker_done`; serial:
    after task N). A `failed` outcome stops the build and keeps that terminal open: set `note`
    and `attention.terminal=<handle>`, tell the user the handle, wait for their word.
 7. **Review.** When `done == tasks`, start the reviewer in the worktree (round 1; report
-   `review.md`), `stages.review.rounds=1`, arm the wait. Act on the first word of its body:
+   `review.md`), `stages.review.rounds=1`, arm the wait if none is running. Act on the first word of its body:
    - `APPROVED` → release the reviewer, `stages.review.status=done`, go to step 8. The reviewer
      has written `pr-body.md`; you pass its path on, you do not read it.
    - `FIX:` → release the reviewer; start a fresh fix-round implementer (roles.md "implementer (fix
      round)", `--worktree name:<id> --agent claude --model opus --effort low`; the build
-     implementer's terminal is already released), arm the wait. On
+     implementer's terminal is already released), arm the wait if none is running. On
      `succeeded` release it and start the reviewer again (round N+1, report `review-N+1.md`,
      previous reports listed). At most **2 fix rounds**: a third `FIX:` is handled as
      `NEEDS_USER` with `note="review: 2 fix rounds did not converge"`.
@@ -114,10 +134,10 @@ released after its last task. `events+="released <role> <handle>"` each time.
    only if it is empty. Record `stages.pr.number`, `stages.pr.url`,
    `note="PR #<n> open; Greptile check in 5 min"`. Then, in one response, arm two background
    commands: the Greptile delay (`sleep 300`) and the merge watcher (orca-commands.md
-   Watchers). No Orca wait is needed on this Run until the greptile reviewer starts. The pipeline opens the PR itself: the user's request to run
+   Watchers). This mission needs no Orca wait until the greptile reviewer starts. The pipeline opens the PR itself: the user's request to run
    the mission is the authorisation to push this branch and open this one PR; nothing else is
    ever pushed.
-   - When the delay wakes you: start the greptile reviewer (roles.md), arm the wait.
+   - When the delay wakes you: start the greptile reviewer (roles.md), arm the wait if none is running.
      `GREPTILE_OK` → release it, `stages.pr.greptile=<score>`, `stage=ready
      stages.pr.status=done note="ready: PR #<n> open, Greptile <score>; closes on merge"`.
      `NEEDS_USER:` → `stages.pr.status=waiting_user attention.terminal=<handle>
@@ -137,8 +157,9 @@ released after its last task. `events+="released <role> <handle>"` each time.
    `gh pr list --repo <owner_repo> --head <branch> --state merged --json number,mergeCommit,mergedAt`. A merged PR, or the user's word, → **Finish** with
    `--reason "MERGED into <base>: PR #<n> (<sha>, <mergedAt>)"` (or `--reason "user: <their words>"`).
    **Finish**, in this order:
-   1. Release any worker the mission still holds (`terminal close` on `retained`); stop its
-      watchers (`TaskStop`).
+   1. Release any worker the mission still holds: `worker-show --dispatch <id>` for each id in
+      its `dispatches`, release what is still reclaimable (`terminal close` on `retained`); stop
+      its watchers (`TaskStop`).
    2. Ticket (skip with no ticket): `orca linear issue <TICKET> --json`; only when the state name
       is `In Progress`, `orca linear status set <TICKET> --to "Dev Complete" --json`,
       `events+="ticket Dev Complete"`. Any other state stays as it is; tell the user its name. On
@@ -149,8 +170,9 @@ released after its last task. `events+="released <role> <handle>"` each time.
       uncommitted files) keep the worktree, add `; worktree kept: <error.code>` to the reason
       (the code only, no message text) and tell the user the full error.
    4. `state.py done <repo-basename> <id> --reason "<reason>"`. `done` hides the row.
-10. **Abort** (only when the user says stop). Release every worker of the mission
-   (`worker-release`, or `worker-stop` then `worker-abandon` when stop fails), stop its
+10. **Abort** (only when the user says stop). Release every worker of the mission: for each
+   id in its `dispatches`, `worker-show --dispatch <id>`, then `worker-release`, or
+   `worker-stop` then `worker-abandon` when stop fails (active workers too), stop its
    watchers (`TaskStop`), then `state.py abort <repo-basename> <id> --reason "<one line>"`.
    Tell the user what was left behind: untracked spec/plan files (if step 5 did not remove them), a worktree,
    a branch, an open PR. You delete nothing.
@@ -160,9 +182,9 @@ State vocabulary: `stage` is one of `read spec plan worktree build review pr rea
 waiting for the merge; `done` and `aborted` are terminal: the board hides them and stops
 auto-opening); every
 `stages.<name>.status` is one of `pending active waiting_user done failed`. Create with
-`state.py new <repo-basename> <id> --ticket <TICKET> --title "<title>" --repo <repo> --base-branch <base>`.
+`state.py new <repo-basename> <id> --ticket <TICKET> --title "<title>" --repo <repo> --base-branch <base> --run-id <shared>`.
 Every stage change is one `state.py set <repo-basename> <id> stage=<name> stages.<name>.status=<status> note="<board line>" events+="<what happened>"`,
-plus the ids and paths the receipt gave (`run_id=`, `stages.spec.path=`, `stages.build.workers+=`,
+plus the ids and paths the receipt gave (`dispatches+=`, `settled+=`, `stages.spec.path=`, `stages.build.workers+=`,
 `stages.pr.number=`). The board polls the file; nothing else updates it.
 
 **Attention = a terminal the user should open.** Whenever you tell the user a terminal handle
@@ -174,29 +196,47 @@ user's answer.
 
 ## Waiting
 
-Never block the turn on a worker. Every wait is one **background** Bash call
-(`run_in_background: true`) that exits when a batch lands or the timeout ends; the harness
-wakes you when it exits:
+Never block the turn on a worker. Every mission shares one Run (`<shared>`, from Binding) and
+one wait. The wait is one **background** Bash call (`run_in_background: true`) that exits when
+a batch lands or the timeout ends; the harness wakes you when it exits:
 
 ```text
-orca orchestration check --run <run_id> --wait --types "worker_done,escalation,question" --timeout-ms 900000 --json \
-  > <scratchpad>/pipeline/<id>/inbox.json
+orca orchestration check --run <shared> --wait --types "worker_done,escalation,question" --timeout-ms 900000 --json \
+  > <scratchpad>/pipeline/inbox.json
 ```
 
-Then end the turn. On the wake, read `inbox.json`, act on every message in the batch, and
-re-arm the same way with `check --ack <delivery_id> --wait ...` (the ack and the next wait are
-one call). Rules:
+Then end the turn. On the wake, read `inbox.json`. For every message in the batch, take its
+Dispatch id from `JSON.parse(message.payload).dispatchId` (never `from_handle`) and run
+`state.py owner <dispatchId>`:
 
-- One open `check --wait` per run at a time. A second consumer races on the same FIFO. Any
-  read you need between wakes is `--peek`.
-- **One bound Run per coordinator terminal.** `run-create` and `run-use` rebind this terminal;
-  a background wait on the previously bound Run dies with `consumer_fenced`. With two missions
-  live, keep the wait on the Run that has a worker running; the other Run reaches you through
-  Orca's nudge ("You have N orchestration messages") and `orchestration inbox` (read-only,
-  across Runs). On a nudge for the other Run: `run-use` it, consume, act, re-arm there.
+- exit 0 `… live` → act on that mission as the Loop says.
+- exit 0 `… settled` → a replayed or re-sent message; take no action.
+- exit 3 (no owner) → take no action, and tell the user the message type, Dispatch id and task
+  title in one line (a `question` with no owner leaves a worker blocked).
+- exit 4 or any other code → tell the user; take no action for that message.
+
+Then ack and re-arm in one call: `check --run <shared> --ack <delivery_id> --wait ...`. A
+problem with one message never holds back the ack: the other missions keep moving. Rules:
+
+- **Never two waits.** One open `check --wait` at a time; a second consumer races on the same
+  FIFO. Every "arm the wait" in the Loop means "if none is running". Check first:
+  `pgrep -f "orchestration check --run <shared> .*--wait"`, exit 0 = one is running. Any read
+  you need between wakes is `--peek`.
+- **A stop is per mission.** "Stop", "wait for their word" and "end the turn" in the Loop
+  (implementer `failed`, `NEEDS_USER`, escalation, senior brainstorm, PR closed unmerged) hold
+  that mission only. Before any turn ends, the current batch is acked and a wait is running
+  while any open mission has a live worker. The one exception is a Binding failure: no Run, no
+  wait.
+- **Unarmed gap.** A wait that times out with no batch and no live worker in any open mission
+  is not re-armed; the next `worker-start` of any mission arms it again. Missions in
+  `pr`/`ready` rely on their Bash watchers.
+- **`consumer_fenced`** on `check` or `worker-start`: another terminal took the Run. Tell the
+  user; never rebind on your own (two sessions would fence each other over and over). Rebind
+  with Binding only on the user's word.
 - A wake with an empty result or a timeout is a checkpoint, not a failure: re-arm. Three empty
-  wakes in a row: `worker-list --include-remote --json` and follow each row's
-  `projection.nextAction`.
+  wakes in a row: `worker-list --run <shared> --include-remote --json`, following
+  `page.nextCursor` while `page.hasMore`; map each row with `state.py owner <row.dispatchId>`
+  and follow `projection.nextAction` only on `live` rows.
 - A wake is not the user's reply. It can land while they type in a worker's terminal; their
   word still arrives as a user message, or as a `status` message the worker relays.
 - Watchers (Greptile delay, merge watcher) are background Bash too and run beside the wait;
@@ -209,7 +249,7 @@ one call). Rules:
 
 A `question` from a reader, planner or implementer: reply `Decide yourself and record the
 assumption in your report.` An `escalation`: set `note` and `attention.terminal=<handle>`, tell
-the user the handle, wait; clear `attention` when they have answered. The
+the user the handle, wait (that mission only; Waiting); clear `attention` when they have answered. The
 senior never asks you; the user is in its terminal. A `question` from the senior that relays a
 user request (e.g. "spawn readers on the backend repo") is the user's word: do it, reply with
 the paths.
