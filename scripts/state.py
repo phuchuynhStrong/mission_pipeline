@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """Mission state for the pipeline skill. One JSON file per mission.
 
-  state.py new  <repo-slug> <id> --ticket WBS-1 --title "..." --repo /abs --base-branch B
+  state.py new  <repo-slug> <id> --run-id R --ticket WBS-1 --title "..." --repo /abs --base-branch B
   state.py set  <repo-slug> <id> stage=spec stages.spec.status=active note="..." events+="text"
   state.py abort <repo-slug> <id> --reason "..."   # stage=aborted, open stages -> failed
   state.py done  <repo-slug> <id> --reason "..."   # stage=done (PR merged / user said so)
   state.py show <repo-slug> <id>
   state.py path <repo-slug> <id>
   state.py list [repo-slug] [--all]        # done/aborted missions hidden unless --all
+  state.py run [--set <run_id>]            # the coordinator's saved Run (coordinator.json)
+  state.py owner <dispatch_id>             # -> "<repo-slug> <id> live|settled"
+
+`run` exits 3 when coordinator.json is corrupt or has no run_id. `owner` exits 3 when
+no open mission lists the Dispatch, 4 when two do; any other non-zero exit is a failure.
 
 Dotted keys walk nested dicts. A value is parsed as JSON when it parses,
-else kept as a string. `key+=value` appends to a list.
+else kept as a string. `key+=value` appends to a list; `dispatches+=` and
+`settled+=` always append the raw string.
 
 `attention` is the board's switch button: set `attention.terminal=<handle>
 attention.reason="<one line>"` when a mission waits on the user; `attention=null` clears it.
@@ -20,6 +26,8 @@ import json, os, sys, argparse, datetime, tempfile
 ROOT = os.path.join(os.path.expanduser("~"), ".claude", "pipeline")
 STAGES = ["read", "spec", "plan", "worktree", "build", "review", "pr"]
 TERMINAL = ["done", "aborted"]  # stage values the board treats as closed; "ready" (PR open, waiting merge) is still open
+COORD = os.path.join(ROOT, "coordinator.json")  # the coordinator's saved Run, shared by every mission
+RAW_LISTS = ("dispatches", "settled")  # Orca ids: append as given, never parse_value
 
 
 def now():
@@ -37,12 +45,32 @@ def load(slug, mid):
 
 def save(slug, mid, data):
     p = path_of(slug, mid)
-    os.makedirs(os.path.dirname(p), exist_ok=True)
     data["updated"] = now()
+    write_json(p, data)
+
+
+def write_json(p, data):
+    os.makedirs(os.path.dirname(p), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), suffix=".tmp")
     with os.fdopen(fd, "w") as f:
         json.dump(data, f, indent=2)
     os.replace(tmp, p)
+
+
+def open_missions():
+    """(slug, mission) for every mission not done/aborted; stray files are skipped."""
+    if not os.path.isdir(ROOT):
+        return
+    for s in sorted(os.listdir(ROOT)):
+        d = os.path.join(ROOT, s)
+        if not os.path.isdir(d):
+            continue
+        for name in sorted(os.listdir(d)):
+            if name.endswith(".json"):
+                with open(os.path.join(d, name)) as f:
+                    m = json.load(f)
+                if m.get("stage") not in TERMINAL:
+                    yield s, m
 
 
 def parse_value(raw):
@@ -67,7 +95,8 @@ def walk(data, dotted, create=True):
 def cmd_new(a):
     data = {
         "id": a.id, "ticket": a.ticket or "", "title": a.title or "",
-        "repo": a.repo or "", "repo_slug": a.slug, "run_id": "",
+        "repo": a.repo or "", "repo_slug": a.slug, "run_id": a.run_id,
+        "dispatches": [], "settled": [],
         "base_branch": a.base_branch or "", "created": now(), "updated": "",
         "stage": "read", "note": "created", "attention": None,
         "stages": {
@@ -97,6 +126,8 @@ def cmd_set(a):
             val = parse_value(raw)
             if key == "events":
                 val = {"at": now(), "text": raw}
+            elif key in RAW_LISTS:
+                val = raw
             node[last].append(val)
         elif "=" in pair:
             key, raw = pair.split("=", 1)
@@ -142,6 +173,52 @@ def cmd_path(a):
     print(path_of(a.slug, a.id))
 
 
+def read_coord():
+    """Saved coordinator file, or None when missing. Exit 3 when it does not parse."""
+    if not os.path.exists(COORD):
+        return None
+    try:
+        with open(COORD) as f:
+            return json.load(f)
+    except (ValueError, OSError):
+        print(f"bad coordinator file: {COORD}", file=sys.stderr)
+        sys.exit(3)
+
+
+def cmd_run(a):
+    data = read_coord()
+    if a.set_id is None:
+        if data is None:
+            print("")
+            return
+        rid = data.get("run_id") if isinstance(data, dict) else None
+        if not isinstance(rid, str) or not rid:
+            print(f"bad coordinator file (no run_id): {COORD}", file=sys.stderr)
+            sys.exit(3)
+        print(rid)
+        return
+    if not a.set_id:
+        print("refused: empty run_id", file=sys.stderr)
+        sys.exit(3)
+    created = data.get("created") if isinstance(data, dict) else None
+    write_json(COORD, {"run_id": a.set_id, "created": created or now(), "updated": now()})
+    print(a.set_id)
+
+
+def cmd_owner(a):
+    hits = [
+        f'{s} {m["id"]} {"settled" if a.dispatch in m.get("settled", []) else "live"}'
+        for s, m in open_missions()
+        if a.dispatch in m.get("dispatches", [])
+    ]
+    for h in hits:
+        print(h)
+    if not hits:
+        sys.exit(3)
+    if len(hits) > 1:
+        sys.exit(4)
+
+
 def cmd_list(a):
     slugs = [a.slug] if a.slug else sorted(
         s for s in os.listdir(ROOT) if os.path.isdir(os.path.join(ROOT, s))
@@ -162,6 +239,7 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
     n = sub.add_parser("new"); n.add_argument("slug"); n.add_argument("id")
     n.add_argument("--ticket"); n.add_argument("--title"); n.add_argument("--repo"); n.add_argument("--base-branch")
+    n.add_argument("--run-id", required=True)
     n.set_defaults(fn=cmd_new)
     s = sub.add_parser("set"); s.add_argument("slug"); s.add_argument("id"); s.add_argument("pairs", nargs="+")
     s.set_defaults(fn=cmd_set)
@@ -172,6 +250,8 @@ def main():
     for name, fn in (("show", cmd_show), ("path", cmd_path)):
         c = sub.add_parser(name); c.add_argument("slug"); c.add_argument("id"); c.set_defaults(fn=fn)
     l = sub.add_parser("list"); l.add_argument("slug", nargs="?"); l.add_argument("--all", action="store_true"); l.set_defaults(fn=cmd_list)
+    r = sub.add_parser("run"); r.add_argument("--set", dest="set_id"); r.set_defaults(fn=cmd_run)
+    o = sub.add_parser("owner"); o.add_argument("dispatch"); o.set_defaults(fn=cmd_owner)
     a = p.parse_args()
     a.fn(a)
 
