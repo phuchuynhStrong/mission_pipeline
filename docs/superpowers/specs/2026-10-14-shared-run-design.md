@@ -1,6 +1,6 @@
 # Shared Run for the pipeline coordinator — design
 
-Date: 2026-10-14. Status: approved in chat; revised after hawkeye review; waiting for spec review.
+Date: 2026-10-14. Status: approved 2026-10-14; revised after hawkeye review and live test T1.
 
 ## Problem
 
@@ -33,10 +33,15 @@ decision, 2026-10-14).
 | `run-show --id <id>` exists and is read-only | VERIFIED | `orca orchestration run-show --help` |
 | `worker-list` has no filter by Dispatch or Task (`--run`, `--terminal-state`, `--include-remote`, `--cursor`, `--limit` only) | VERIFIED | `orca orchestration worker-list --help` |
 | `worker-show --dispatch <id>` inspects one Dispatch | VERIFIED | `orca orchestration worker-show --help` |
-| Waiting on a Run without binding to it is not supported | INFERRED | `check --help` documents only the bound Run; `orca-commands.md` `consumer_fenced` note |
-| Workers in different worktrees and repos can share one Run | INFERRED | follows from "never places workers"; live test T1 |
-| After `run-use` from a new terminal, unacked messages of the Run replay | INFERRED | follows from the replay rule; live test T1 |
-| `question` and `escalation` messages carry the sender's Dispatch id | UNKNOWN | live test T1 |
+| Waiting on a Run without binding to it is not supported; a fenced terminal gets `consumer_fenced` even on `--peek` | VERIFIED | T1 step 2 |
+| `worker-release` and `worker-list --run` still work from a fenced terminal | VERIFIED | T1 step 4 |
+| Workers in different worktrees and repos can share one Run, and one wait gets both | VERIFIED | T1 step 1: workers in `mission_pipeline` and `motnhi-app` arrived in one batch |
+| `run-use` from a new terminal succeeds while the old one is live (takes over, `consumer_generation` +1); unacked messages replay to it under a new Delivery id | VERIFIED | T1 step 2 |
+| `question` and `worker_done` carry the Dispatch id at `JSON.parse(message.payload).dispatchId`; `from_handle` is NOT reliable (`dispatch:<id>` on a question, a `term_…` handle on `worker_done`) | VERIFIED | T1 step 1 |
+| `escalation` carries `payload.dispatchId` too | INFERRED | same lifecycle payload shape; not sent in T1 |
+| `worker-list` rows carry `dispatchId`, `taskId`, `terminalState` | VERIFIED | T1 step 4 |
+| `run-show` on a missing Run: exit 1, `error.code = "run_not_found"` | VERIFIED | T1 step 3 |
+| `worker-start` receipt: `result.dispatchId` (`ctx_…`), `result.taskId`, `result.runId` | VERIFIED | T1 step 1 |
 | No mission is open now, so no migration | VERIFIED | `state.py list` printed no rows on 2026-10-14 |
 
 ## Design
@@ -71,7 +76,7 @@ session unless the user asks.
 3. Saved id present → `orca orchestration run-show --id <id> --json`.
    - Found → `orca orchestration run-use --id <id> --json`. Success: done. Any error: tell the
      user the error code and stop. Never create a new Run silently.
-   - Not found → step 4. (Exact not-found code recorded in T1.)
+   - `error.code == "run_not_found"` → step 4.
    - Any other `run-show` error: tell the user the code and stop.
 4. No saved id, or not found → `orca orchestration run-create --objective "pipeline coordinator" --json`,
    then `state.py run --set <run_id>`.
@@ -91,6 +96,7 @@ Step 1 of the Loop becomes: get the ticket text, parse `--base`, write `mission.
   too.
 - When the coordinator accepts a `worker_done` for a Dispatch: `settled+=<dispatch_id>` in the
   same `set` that records the outcome.
+- The Dispatch id of a message is `JSON.parse(message.payload).dispatchId`, never `from_handle`.
 - `state.py owner <dispatch_id>` scans missions that are not `done`/`aborted` in every repo
   folder; it reads `dispatches` and `settled` with `.get(…, [])`.
 
@@ -132,7 +138,7 @@ Step 1 of the Loop becomes: get the ticket text, parse `--base`, write `mission.
   running"). Missions in `pr`/`ready` rely on their Bash watchers, not on the wait.
 - **Three empty wakes in a row:** `worker-list --run <shared> --include-remote --json`,
   following `page.nextCursor` while `page.hasMore`; map each row to a mission with
-  `state.py owner` (by the row's Dispatch id; field name from T1) and act only on `live` rows.
+  `state.py owner <row.dispatchId>` and act only on `live` rows.
 
 Removed from `SKILL.md` Waiting: the "two missions live → keep the wait on the Run with a
 worker, `run-use` the other on a nudge" rule.
@@ -187,20 +193,17 @@ Unit (`python3 -I -m unittest scripts/state_test.py`):
     (never reports "no owner" on a crash).
 11. `dispatches+=123` stores the string `"123"`.
 
-Live (T1, needs the user's yes; creates a throwaway Run and two terminals, then releases them):
+Live (T1) — run 2026-10-14 on throwaway Run `run_ef27c03cb305`, all VERIFIED:
 
-1. Terminal A: create a throwaway Run; start two Haiku workers on it with `--run` in two
-   different worktrees; one wait. Record: both `worker_done` arrive through the one wait; the
-   Dispatch id field in `worker_done`, `question` (one worker asks via `ask`) and in
-   `worker-list` rows.
-2. Leave one `worker_done` unacked. Terminal B: `run-use` onto the throwaway Run. Record whether
-   `run-use` succeeds while A is live and whether B's consuming `check` replays the unacked
-   message.
-3. `run-show --id run_does_not_exist --json`: record the not-found code.
-4. Release both workers.
-
-If `question`/`escalation` lack a Dispatch id, the fallback is the task title
-`<role> <mission-id>` for those types; section 3 is updated before implementation.
+1. Two Haiku workers started with `--run` in `current` (`mission_pipeline`) and
+   `path:/Users/phuc134/orca/motnhi-app`. One wait returned A's `question` and B's
+   `worker_done` in one batch; after reply + ack, the same wait loop got A's `worker_done`.
+2. A's `worker_done` left unacked; a second Orca terminal ran `run-use` (succeeded, took over)
+   and a consuming `check` replayed that `worker_done` under a new Delivery id. The first
+   terminal then got `consumer_fenced`, even on `--peek`.
+3. `run-show --id run_does_not_exist` → `run_not_found`.
+4. Both workers released (`released`); the test terminal closed. The throwaway Run stays (Orca
+   has no Run delete); it holds no live worker.
 
 ## Risks
 
