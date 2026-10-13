@@ -100,7 +100,7 @@ released after its last task. `events+="released <role> <handle>"` each time.
    the user. Then `state.py set ... stages.spec.path=<worktree>/<rel> stages.plan.path=<worktree>/<rel>
    events+="moved spec and plan to worktree"`; steps 6 to 8 pass these worktree paths. Record path and
    branch. Confirm no Dispatch of this mission is still reclaimable: `worker-show --dispatch <id>`
-   for each id in its `dispatches` that is not released; release anything still reclaimable.
+   for each id in its `dispatches`; release anything still reclaimable.
    Other missions' workers on the shared Run are never touched.
 6. **Build.** `parallel: no` → one implementer, task 1; on `succeeded` reuse its terminal
    (`--terminal <handle>`) for task 2, and so on. `parallel: yes` → one implementer per task in one
@@ -222,11 +222,17 @@ problem with one message never holds back the ack: the other missions keep movin
   FIFO. Every "arm the wait" in the Loop means "if none is running". Check first:
   `pgrep -f "orchestration check --run <shared> .*--wait"`, exit 0 = one is running. Any read
   you need between wakes is `--peek`.
+- **Inside a wake, "arm the wait" is the closing ack.** When a Loop step starts a worker while
+  you handle a wake, do not arm a plain wait (`pgrep` finds none because the old wait exited):
+  the closing `check --ack <delivery_id> --wait ...` call is that step's wait. Never arm a plain
+  wait while a batch is unacked; it would replay the same batch.
+- **Live worker** = a Dispatch id in an open mission's `dispatches` that is not in its
+  `settled` (`state.py show` on each open mission from `state.py list`).
 - **A stop is per mission.** "Stop", "wait for their word" and "end the turn" in the Loop
   (implementer `failed`, `NEEDS_USER`, escalation, senior brainstorm, PR closed unmerged) hold
   that mission only. Before any turn ends, the current batch is acked and a wait is running
-  while any open mission has a live worker. The one exception is a Binding failure: no Run, no
-  wait.
+  while any open mission has a live worker. The two exceptions are a Binding failure (no Run)
+  and `consumer_fenced` (another terminal holds the Run): no wait.
 - **Unarmed gap.** A wait that times out with no batch and no live worker in any open mission
   is not re-armed; the next `worker-start` of any mission arms it again. Missions in
   `pr`/`ready` rely on their Bash watchers.

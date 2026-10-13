@@ -104,8 +104,10 @@ echo "TIMEOUT: PR <n> still open after 6h"; exit 2
   repo list --json` shows what is (a monorepo registers at its root, not a sub-folder).
 - Compare `launch.requested` with `launch.effective`. If `effective` drops the effort, say so
   in the state `note`; do not claim the effort.
-- `worker_done` must carry the Dispatch id you expect. A done from another id is not yours
-  (a re-sent done from an already settled dispatch: ack it, ignore it).
+- A batch holds every mission's messages. Route each one by `state.py owner
+  <payload.dispatchId>` (SKILL.md Waiting): `live` → act on that mission; `settled` (a re-sent
+  done from an already settled dispatch) → ignore it; exit 3 → tell the user. Never drop a
+  message as "not yours" because it belongs to another mission.
 - A `consumer_fenced` error on `check` or `worker-start`: another terminal took the shared Run
   (it fences even `--peek`). Tell the user; do not rebind on your own. Rebind with Binding only
   on the user's word.
