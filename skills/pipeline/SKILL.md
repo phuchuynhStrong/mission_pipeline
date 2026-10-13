@@ -47,8 +47,8 @@ released after its last task. `events+="released <role> <handle>"` each time.
 | review reports | `.../review.md`, `.../review-2.md`, ... (one per round) |
 | PR body, Greptile report | `.../pr-body.md` (written by the reviewer), its split `.../pr-title.txt` + `.../pr-body-rest.md`, `.../greptile-review.md` |
 | inbox, watcher outputs | `.../inbox.json`, `.../pr.json`, `.../pr-final.json` |
-| spec | `<repo>/docs/superpowers/specs/YYYY-MM-DD-<id>-<slug>-design.md` |
-| plan | `<repo>/docs/superpowers/plans/YYYY-MM-DD-<id>-<slug>.md` |
+| spec | `<repo>/docs/superpowers/specs/YYYY-MM-DD-<id>-<slug>-design.md`; from step 5 on, the same relative path in the worktree |
+| plan | `<repo>/docs/superpowers/plans/YYYY-MM-DD-<id>-<slug>.md`; from step 5 on, the same relative path in the worktree |
 | state (git-free) | `~/.claude/pipeline/<repo-basename>/<id>.json`, written only with `python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py` (`new`, `set`, `done`, `abort`, `show`, `list`) |
 | worktree | `orca worktree create --name <id> --base-branch <base>`; branch `feature/<id>-<slug>` |
 
@@ -67,9 +67,19 @@ released after its last task. `events+="released <role> <handle>"` each time.
 4. **Plan.** Start the planner with the spec path and plan destination, arm the wait. On `worker_done` parse
    the body line into `stages.plan.tasks`, `stages.plan.parallel`; if `spec-is-plan: yes`, the plan
    path is the spec path. Release the planner.
-5. **Worktree.** `orca worktree create --name <id> --base-branch <base> --json` → path. In it:
+5. **Worktree.** Ticket first (skip with no ticket): `orca linear issue <TICKET> --json`; if the
+   state `type` is `triage`, `backlog` or `unstarted`, `orca linear status set <TICKET> --to
+   "In Progress" --json`, `events+="ticket In Progress"`. A `started` or later state stays as it
+   is. On `linear_invalid_state` leave it and tell the user; any other Linear error: follow the
+   orca-linear Errors rules once, then tell the user. A ticket step never blocks the worktree. Then
+   `orca worktree create --name <id> --base-branch <base> --json` → path. In it:
    `git switch -c feature/<id>-<slug>`; `cp` spec and plan to the same relative paths;
-   `git add` + `git commit -m "#<TICKET> docs(<scope>): add spec and plan"`. Record path and
+   `git add` + `git commit -m "#<TICKET> docs(<scope>): add spec and plan"`. Only after that
+   commit succeeds, remove the spec and plan (one file when `spec-is-plan: yes`) from `<repo>`,
+   where the senior and planner wrote them. Per file, `git -C <repo> ls-files --error-unmatch
+   <file>`: exit 1 (untracked) → `rm` it; exit 0 (tracked) or any other exit → keep it and tell
+   the user. Then `state.py set ... stages.spec.path=<worktree>/<rel> stages.plan.path=<worktree>/<rel>
+   events+="moved spec and plan to worktree"`; steps 6 to 8 pass these worktree paths. Record path and
    branch. Confirm `worker-list --run <run_id> --terminal-state reclaimable` is empty; release
    anything it still lists.
 6. **Build.** `parallel: no` → one implementer, task 1; on `succeeded` reuse its terminal
@@ -117,22 +127,33 @@ released after its last task. `events+="released <role> <handle>"` each time.
      `succeeded` release it and `git -C <worktree> push` (same PR), then `attention=null
      stage=ready stages.pr.status=done`. If the user declines: release and close the greptile
      terminal, `attention=null stage=ready stages.pr.status=done`.
-   - When the merge watcher wakes you with `MERGED`: `state.py done <repo-basename> <id>
-     --reason "MERGED into <base>: PR #<n> (<sha>, <mergedAt>)"`, release any worker the
-     mission still holds, tell the user. `CLOSED` without merge: `note="PR #<n> closed
+   - When the merge watcher wakes you with `MERGED`: run **Finish** (step 9) with `--reason
+     "MERGED into <base>: PR #<n> (<sha>, <mergedAt>)"`, tell the user. `CLOSED` without merge: `note="PR #<n> closed
      unmerged"`, `attention=null`, tell the user and wait for their word. Exit 2 (6 h without a
      result): re-arm the watcher.
 9. **Close.** A `ready` mission stays on the board until its PR is merged. The merge watcher
    normally closes it; whenever the user says a mission is done or asks where missions stand,
    also run for every `pr`/`ready` mission:
-   `gh pr list --repo <owner_repo> --head <branch> --state merged --json number,mergeCommit,mergedAt`. A merged PR, or the user's word, → `state.py done <repo-basename> <id>
-   --reason "MERGED into <base>: PR #<n> (<sha>, <mergedAt>)"` (or `--reason "user: <their words>"`).
-   `done` hides the row. The worktree and branch stay; you delete nothing unless asked.
+   `gh pr list --repo <owner_repo> --head <branch> --state merged --json number,mergeCommit,mergedAt`. A merged PR, or the user's word, → **Finish** with
+   `--reason "MERGED into <base>: PR #<n> (<sha>, <mergedAt>)"` (or `--reason "user: <their words>"`).
+   **Finish**, in this order:
+   1. Release any worker the mission still holds (`terminal close` on `retained`); stop its
+      watchers (`TaskStop`).
+   2. Ticket (skip with no ticket): `orca linear issue <TICKET> --json`; only when the state name
+      is `In Progress`, `orca linear status set <TICKET> --to "Dev Complete" --json`,
+      `events+="ticket Dev Complete"`. Any other state stays as it is; tell the user its name. On
+      `linear_invalid_state` leave it and tell the user; any other Linear error: follow the
+      orca-linear Errors rules once, then tell the user. A ticket step never blocks Finish.
+   3. `orca worktree rm --worktree name:<id> --json`, never `--force`. Orca also deletes the
+      local branch when it can prove it merged; otherwise the branch stays. On failure (e.g.
+      uncommitted files) keep the worktree, add `; worktree kept: <error.code>` to the reason
+      (the code only, no message text) and tell the user the full error.
+   4. `state.py done <repo-basename> <id> --reason "<reason>"`. `done` hides the row.
 10. **Abort** (only when the user says stop). Release every worker of the mission
    (`worker-release`, or `worker-stop` then `worker-abandon` when stop fails), stop its
    watchers (`TaskStop`), then `state.py abort <repo-basename> <id> --reason "<one line>"`.
-   Tell the user what was left behind: untracked spec/plan files, a worktree, a branch, an open
-   PR. You delete nothing.
+   Tell the user what was left behind: untracked spec/plan files (if step 5 did not remove them), a worktree,
+   a branch, an open PR. You delete nothing.
 
 State vocabulary: `stage` is one of `read spec plan worktree build review pr ready done aborted`
 (`pr` = PR open, Greptile check running or waiting on the user; `ready` = Greptile done,

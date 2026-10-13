@@ -19,9 +19,16 @@ orca orchestration worker-start --spec "..." --task-title "planner <id>" \
 orca orchestration worker-start --spec "..." --task-title "reader <angle> <id>" \
   --worktree path:/abs/path/of/registered/repo --agent claude --model claude-haiku-5-5 --effort high --json
 
+# ticket state (missions with a ticket; never --current: the coordinator is not in the linked worktree)
+orca linear issue <TICKET> --json                                            # -> state name + type
+orca linear status set <TICKET> --to "In Progress" --json                     # step 5, only from triage/backlog/unstarted
+orca linear status set <TICKET> --to "Dev Complete" --json                    # Finish, only from In Progress
+
 # worktree after the plan
 orca worktree create --name <id> --base-branch <base> --json                 # -> path
 git -C <path> switch -c feature/<id>-<slug>
+git -C <repo> ls-files --error-unmatch <spec-or-plan>                       # exit 1 = untracked: rm from <repo>; exit 0 or other: keep
+orca worktree rm --worktree name:<id> --json                                 # Finish only; never --force
 
 # implementers, reviewer, greptile reviewer: mission worktree
 orca orchestration worker-start --spec "..." --task-title "build <id> task <n>" \
