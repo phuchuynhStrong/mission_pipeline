@@ -1,6 +1,6 @@
 {
   "name": "pipeline",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Mission board pane for the pipeline skill: one row per mission, read > spec > plan > tree > build > review",
   "author": { "name": "Phuc Huynh" },
   "userConfig": {
