@@ -58,6 +58,32 @@ the FIRST line of its body is exactly:
 tasks: <N>; parallel: <yes|no>; spec-is-plan: <yes|no>
 ```
 
+## planner (plan only)
+
+Plan mode only. The HTML plan is the mission's deliverable; nothing builds from it in this run.
+`{existing_plan}` is empty unless the mission switched to plan mode after a planner already ran.
+`{title}` is the state `title`; `{TICKET}` is `none` when the mission has no ticket.
+
+```
+Target: {repo}, current worktree. Spec: {spec_path}. Existing plan: {existing_plan}.
+Change: write a light plan as ONE self-contained HTML file at {plan_path}. If an existing plan
+is given, carry its content over unchanged and only fill what the sections below miss.
+Content: a header (ticket {TICKET}, title {title}, date, base branch {base_branch}, a relative
+link to ./spec.md), then file map, task boundaries, exact interfaces between tasks, task order, Review
+Focus (unspecified inputs likely to break), unit test list (no widget tests), and a
+spec-coverage check. Each task names its files, what to change, and how to verify with
+`flutter analyze` and unit tests, and says whether it touches files no other task touches.
+No full code blocks per step.
+HTML: inline <style> only; no external scripts, stylesheets, fonts or images; no JavaScript.
+Colours as CSS variables with a light and a dark set (prefers-color-scheme). A section nav at
+the top with anchor links; one card per task; paths and symbols in <code>; readable at 375px
+width with no sideways scroll. A diagram only if a flow needs one, as inline SVG.
+Ownership: only {plan_path}. No code changes.
+Observable acceptance: {plan_path} exists and opens offline, worker_done --outcome succeeded
+--report-path {plan_path}, and the FIRST line of its body is exactly:
+tasks: <N>; parallel: <yes|no>; spec-is-plan: no
+```
+
 ## implementer
 
 ```

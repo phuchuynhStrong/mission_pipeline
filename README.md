@@ -20,7 +20,10 @@ Orca workers: read > spec > plan > tree > build > review.
    /plugin install pipeline@mission-pipeline
    ```
 
-3. Type `/pipeline` with a ticket id, or hand over a feature or bug in words.
+3. Type `/pipeline` with a ticket id, or hand over a feature or bug in words. Add
+   `--plan-only` (or type `/pipeplan`) to stop after the plan: read > spec > plan, then
+   `spec.md` + `plan.html` are committed to `docs/preparation/<id>-<slug>/` on the current
+   branch. No worktree, no build, no ticket status change.
 
 ## Layout
 
@@ -29,6 +32,7 @@ Orca workers: read > spec > plan > tree > build > review.
 .claude-plugin/marketplace.json
 skills/pipeline/SKILL.md       the coordinator skill
 skills/pipeline/references/    Orca command list, worker role specs
+commands/pipeplan.md           /pipeplan: the pipeline in plan mode
 hooks/                         /pboard pane (register.tsx, hooks.json, test)
 scripts/state.py               mission state: new / set / done / abort / show / list
 types/index.d.ts               Mission state types shared by the hook and the test

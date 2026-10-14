@@ -20,7 +20,7 @@ must be able to type into the senior's terminal, and only Orca workers have one.
 |---|---|---|---|---|---|---|
 | reader (1..N) | claude | claude-haiku-5-5 | high | current (or an exact registered repo) | mission.md | `--report-path` readings file |
 | senior | claude | opus | high | current | mission.md + readings | `--report-path` spec path |
-| planner | claude | opus | medium | current | spec | `--report-path` plan path, body `tasks: N; parallel: yes/no; spec-is-plan: yes/no` |
+| planner (also plan only) | claude | opus | medium | current | spec | `--report-path` plan path, body `tasks: N; parallel: yes/no; spec-is-plan: yes/no` |
 | implementer | claude | opus | low | mission worktree | plan (one task) or review report (fix round) | `--outcome`, `--files-modified` |
 | reviewer | claude | opus | high | mission worktree | spec + plan + `git diff` | body `APPROVED` (+ writes pr-body.md), `FIX: <line>` or `NEEDS_USER: <line>` |
 | greptile reviewer | claude | opus | high | mission worktree | PR comments via `gh` + code | body `GREPTILE_OK: <score>` or `NEEDS_USER: <score> — <line>` |
@@ -56,6 +56,7 @@ released after its last task. `events+="released <role> <handle>"` each time.
 | saved Run | `~/.claude/pipeline/coordinator.json`, one per machine, read and written only with `state.py run` |
 | spec | `<repo>/docs/superpowers/specs/YYYY-MM-DD-<id>-<slug>-design.md`; from step 5 on, the same relative path in the worktree |
 | plan | `<repo>/docs/superpowers/plans/YYYY-MM-DD-<id>-<slug>.md`; from step 5 on, the same relative path in the worktree |
+| preparation (plan mode) | `<repo>/<prep_dir>/`: `spec.md` + `plan.html`, committed on the current branch; replaces the spec and plan rows above. `prep_dir` per Plan mode, Folder |
 | state (git-free) | `~/.claude/pipeline/<repo-basename>/<id>.json`, written only with `python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py` (`new`, `set`, `done`, `abort`, `show`, `list`, `run`, `owner`) |
 | worktree | `orca worktree create --name <id> --base-branch <base>`; branch `feature/<id>-<slug>` |
 
@@ -65,6 +66,8 @@ released after its last task. `events+="released <role> <handle>"` each time.
    <branch>` from the arguments (default: the repo's default branch). Write `mission.md`.
    `orca status --json`, then **Binding** (below) → `<shared>`. Then
    `state.py new ... --base-branch <base> --run-id <shared>`, then `state.py set ... owner_repo=<owner/repo>`.
+   `--plan-only` in the arguments (or `/pipeplan`) → **Plan mode** (below): pick `prep_dir`
+   (Plan mode, Folder), then `state.py set ... mode=plan prep_dir=<rel>`.
    Open the board: `/pboard`. No mission creates its own Run.
 
    **Binding** (once per session: the first `/pipeline`, or the first turn after a restart in
@@ -81,11 +84,16 @@ released after its last task. `events+="released <role> <handle>"` each time.
    all readers in one wave, `--worktree current`, arm the wait if none is running (Waiting) and end the turn. On
    each `worker_done` record the path and release that reader. Continue when every reader is
    released.
-3. **Spec.** Start the senior with mission + readings paths and the spec destination. Rename its
-   terminal `senior <id>`. Set `stages.spec.status=waiting_user`, `note="brainstorm with senior"`, `attention.terminal=<h>`, `attention.reason="brainstorm with senior"`, and tell the user `orca terminal switch --terminal <h>`, arm the wait if none is running and end the turn. On `worker_done` record the spec path, set `attention=null`, and close the senior's terminal (release, then `terminal close` on `retained`).
-4. **Plan.** Start the planner with the spec path and plan destination, arm the wait if none is running. On `worker_done` parse
+3. **Spec.** Start the senior with mission + readings paths and the spec destination (`mode=plan`:
+   `<repo>/<prep_dir>/spec.md`). Rename its
+   terminal `senior <id>`. Set `stages.spec.status=waiting_user`, `note="brainstorm with senior"`, `attention.terminal=<h>`, `attention.reason="brainstorm with senior"`, and tell the user `orca terminal switch --terminal <h>`, arm the wait if none is running and end the turn. On `worker_done` record the spec path, set `attention=null`, and close the senior's terminal (release, then `terminal close` on `retained`). `mode=plan` and the
+   spec is outside `<prep_dir>` → Plan mode, Switch.
+4. **Plan.** Start the planner with the spec path and plan destination (`mode=plan`: roles.md
+   "planner (plan only)", destination `<repo>/<prep_dir>/plan.html`, and `stages.plan.plan_only_ran=true` in the `set` that records the receipt), arm the wait if none is running. On `worker_done` parse
    the body line into `stages.plan.tasks`, `stages.plan.parallel`; if `spec-is-plan: yes`, the plan
-   path is the spec path. Release the planner.
+   path is the spec path. Release the planner. Then `state.py show` the mission: `mode=plan` →
+   **Plan mode**: spec and plan both inside `<prep_dir>` → Cleanup (Plan mode, Switch), then P1;
+   otherwise Switch. Never step 5.
 5. **Worktree.** Ticket first (skip with no ticket): `orca linear issue <TICKET> --json`; if the
    state `type` is `triage`, `backlog` or `unstarted`, `orca linear status set <TICKET> --to
    "In Progress" --json`, `events+="ticket In Progress"`. A `started` or later state stays as it
@@ -193,6 +201,64 @@ set it in the same `state.py set`: `attention.terminal=<handle> attention.reason
 The board turns that into a switch button (hotkeys 1..9 down the switch rows) that runs `orca terminal
 switch`. Clear it with `attention=null` in the `set` that records the stage moving on or the
 user's answer.
+
+## Plan mode
+
+`mode=plan` runs steps 1 to 4 only. The output is `spec.md` + `plan.html` in `<repo>/<prep_dir>`,
+committed on the current branch of `<repo>`. No worktree, no build, no PR, no ticket status
+change, nothing pushed. The user's request for plan mode is the authorisation for this one
+commit.
+
+- **Folder.** `prep_dir` is `docs/preparation/<id>-<slug>` (no ticket: `docs/preparation/<id>`,
+  the id already holds the slug). Pick it once, store it with `state.py set ... prep_dir=<rel>`,
+  and build every plan-mode path from the stored value, never from the slug again. Before
+  storing it, look for `<repo>/docs/preparation/<id>`, and with a ticket also
+  `<repo>/docs/preparation/<id>-*` (a no-ticket id checks the exact folder only). One
+  exists → tell the user its path and the two choices: reuse it as `prep_dir` (its `spec.md` and
+  `plan.html` are replaced and the commit updates them), or Abort. Wait for their word.
+- **P1. Commit.** Both `stages.spec.path` and `stages.plan.path` must be under
+  `<repo>/<prep_dir>`; otherwise go to Switch, never commit a full-flow path. Refuse when
+  `git -C <repo> symbolic-ref -q HEAD` exits non-zero (detached HEAD), or when any of
+  `MERGE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`, `rebase-merge`, `rebase-apply` exists at
+  `git -C <repo> rev-parse --path-format=absolute --git-path <name>`. Otherwise
+  `git -C <repo> add -- <spec> <plan>`, then
+  `git -C <repo> commit -m "#<TICKET> docs(<scope>): add spec and plan" -- <spec> <plan>` (no
+  ticket: drop `#<TICKET> `), then `git -C <repo> rev-parse --short HEAD` → `<sha>`. The paths
+  after `--` keep the user's other staged work out of the commit. Never `--no-verify`, never
+  `--amend`. On any refusal or failure (e.g. a pre-commit hook): if the `add` ran,
+  `git -C <repo> reset -q -- <spec> <plan>` so both files are unstaged again; then
+  `stages.plan.status=failed note="commit: <one line>"`, tell the user the full error, wait for
+  their word. On it: when `git -C <repo> status --porcelain -- <spec> <plan>` is empty and
+  `git -C <repo> log -1 --format=%h -- <plan>` prints a sha, the user committed them: that is
+  `<sha>`, go to P2. Otherwise run P1 again.
+- **P2. Finish.** Release any worker the mission still holds (Finish step 1), then
+  `state.py set ... stages.plan.status=done attention=null` and
+  `state.py done <repo-basename> <id> --reason "planned: <sha> <prep_dir>/"`. Skip Finish steps
+  2 and 3.
+- **Switch.** When the user says "switch <id> to plan mode": `state.py show` it. Stage `worktree`
+  or later → refuse, tell the user Abort is the way out. Stage `read`, `spec` or `plan` → pick
+  `prep_dir` as in Folder, then `state.py set ... mode=plan prep_dir=<rel>
+  events+="switched to plan mode"` (when step 3 or 4 routes back here, `mode` and `prep_dir`
+  are already stored: skip this). Apply these in order:
+  1. Spec. Already inside `<prep_dir>` → go to 2. Senior not started → step 3 as written for `mode=plan`. Senior running → wait for its
+     `worker_done` (step 3), then move. Senior done → move, but only while no planner of this
+     mission is running; a running planner reads the spec, so wait for its `worker_done` first. Move = `mkdir -p <repo>/<prep_dir>`;
+     untracked per `git ls-files --error-unmatch` → `mv` to `<prep_dir>/spec.md`; tracked or any
+     other exit → `cp` and tell the user; then `stages.spec.path=<new path>`.
+  2. Plan, only after the spec sits in `<prep_dir>`. Plan already inside `<prep_dir>` → Cleanup,
+     then P1. Planner not started → step 4 as written for `mode=plan`. Planner running → wait for
+     its `worker_done` (step 4 routes back here). Planner done with a plan outside `<prep_dir>`:
+     `stages.plan.plan_only_ran` is true → do not start another planner;
+     `stages.plan.status=failed note="plan-only planner wrote outside <prep_dir>"`, tell the user,
+     wait for their word. Otherwise `stages.plan.old_path=<its plan path>` (empty when
+     `spec-is-plan: yes`: that path was the spec, already moved), then start "planner (plan
+     only)" with `{existing_plan}` = the old path (empty when `spec-is-plan: yes`) and
+     `stages.plan.plan_only_ran=true`; its `worker_done` goes through step 4.
+  - **Cleanup.** `stages.plan.old_path` set → remove it the same way as a spec move (untracked →
+    `rm`; tracked or any other exit → keep it and tell the user), then
+    `stages.plan.old_path=""`. Not set → nothing.
+  - Never switch back to the full flow.
+- **Abort** in plan mode leaves `<prep_dir>` behind, untracked or modified; tell the user.
 
 ## Waiting
 
