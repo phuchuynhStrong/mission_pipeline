@@ -172,9 +172,12 @@ export type HealthLine = { text: string; tone: HealthTone }
 const HEALTH_COLOR: Record<HealthTone, string | undefined> = { ok: 'green', err: 'red', idle: undefined }
 const HEALTH_DAYS = 7
 const HEALTH_MS = 10 * 60 * 1000
+/** Shared by every session on the machine, in the state folder: one scan serves them all. */
+const HEALTH_CACHE = 'lsp-health.json'
 let health: LspHealth | undefined
 let healthProblem = ''
 let healthBusy = false
+let healthTimer = false
 
 /** Pure: the argv that asks the stats script for the board's health line. */
 export function healthArgv(script: string, days = HEALTH_DAYS): string[] {
@@ -212,13 +215,44 @@ export function healthLineOf(h: LspHealth | undefined, problem: string, now: num
   }
 }
 
-async function refreshHealth($: EngineInterface) {
+/** Pure: the cached health when the cache file is younger than `maxAgeMs`, else undefined. */
+export function freshHealth(text: string, now: number, maxAgeMs = HEALTH_MS): LspHealth | undefined {
+  try {
+    const cache = JSON.parse(text) as { at?: unknown; health?: unknown }
+    if (typeof cache.at !== 'number' || now - cache.at < 0 || now - cache.at >= maxAgeMs) return undefined
+    return parseHealth(JSON.stringify(cache.health))
+  } catch {
+    return undefined
+  }
+}
+
+async function readHealthCache($: EngineInterface, path: string): Promise<LspHealth | undefined> {
+  try {
+    return (await $.fs.exists(path)) ? freshHealth(await $.fs.read(path), Date.now()) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function refreshHealth($: EngineInterface, option: string) {
   if (healthBusy) return
   healthBusy = true
   try {
+    const root = await rootOf($, option)
+    const cachePath = root ? `${root}/${HEALTH_CACHE}` : undefined
+    const cached = cachePath ? await readHealthCache($, cachePath) : undefined
+    if (cached) {
+      health = cached
+      healthProblem = ''
+      return
+    }
     const script = `${$.plugin.root}/scripts/search_stats.py`
     const { exitCode, stdout, stderr } = await $.process.run(healthArgv(script), { timeoutMs: 60000 })
     const parsed = exitCode === 0 ? parseHealth(stdout) : undefined
+    // Only a good result is shared; a failure stays local so the next session tries again.
+    if (parsed && cachePath) {
+      await $.fs.write(cachePath, JSON.stringify({ at: Date.now(), health: parsed })).catch(() => undefined)
+    }
     // A failed run clears the old numbers: stale green must not hide a broken check.
     health = parsed
     healthProblem = parsed
@@ -231,8 +265,17 @@ async function refreshHealth($: EngineInterface) {
     healthProblem = err instanceof Error ? err.message.slice(0, 80) : String(err).slice(0, 80)
   } finally {
     healthBusy = false
+    $.ui.invalidate('ui.render')
   }
-  $.ui.invalidate('ui.render')
+}
+
+/** Refresh now, and every HEALTH_MS from then on; only sessions that show the board get here. */
+function watchHealth($: EngineInterface, option: string): Promise<void> {
+  if (!healthTimer) {
+    healthTimer = true
+    $.clock.every(HEALTH_MS, () => void refreshHealth($, option))
+  }
+  return refreshHealth($, option)
 }
 
 const POLL_MS = 3000
@@ -275,18 +318,20 @@ export const register: Register = (on, options) => {
     await $.command.register({ name: 'pboard', description: 'Open the pipeline mission board' })
     await load($, rootOption)
     $.clock.every(POLL_MS, () => void load($, rootOption))
-    void refreshHealth($)
-    $.clock.every(HEALTH_MS, () => void refreshHealth($))
     const open = cache.some(m => !isClosed(m))
-    if (open) void $.ui.open({ id: PANE, title: 'Pipeline' })
+    if (open) {
+      void $.ui.open({ id: PANE, title: 'Pipeline' })
+      void watchHealth($, rootOption)
+    }
     return next(e)
   })
 
   on('command.run', { command: 'pboard' }, async $ => {
     await load($, rootOption)
-    void refreshHealth($)
     // The person asked for the board: hand it the keyboard so hotkeys and Enter work at once.
     await $.ui.open({ id: PANE, title: 'Pipeline', focus: true })
+    // The pane is already up; the LSP line fills in when this ends (a cache hit, or one scan).
+    await watchHealth($, rootOption)
     return { text: 'Pipeline board opened. ctrl+x tab focuses it; a row digit or Enter presses switch.' }
   })
 

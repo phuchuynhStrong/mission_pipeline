@@ -5,6 +5,7 @@ import {
   PANE,
   ageOf,
   badgeOf,
+  freshHealth,
   healthArgv,
   healthLineOf,
   isClosed,
@@ -352,4 +353,56 @@ test('a failed stats run says so instead of keeping old numbers', async ($, on) 
   await $.command.run(open)
   const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
   expect(await ui.find({ text: 'LSP · stats unavailable: exit 1: boom' })).toBeDefined()
+})
+
+test('freshHealth uses a cache younger than 10 minutes and nothing else', () => {
+  const now = Date.parse('2026-10-17T10:00:00Z')
+  const text = (at: number, h: unknown = healthy) => JSON.stringify({ at, health: h })
+  expect(freshHealth(text(now - 60000), now)).toEqual(healthy)
+  expect(freshHealth(text(now - 10 * 60000), now)).toBeUndefined()
+  expect(freshHealth(text(now + 60000), now)).toBeUndefined()
+  expect(freshHealth(text(now, { nope: 1 }), now)).toBeUndefined()
+  expect(freshHealth('not json', now)).toBeUndefined()
+})
+
+/** A state folder holding a fresh shared health cache, plus a record of every command run. */
+function withCache(on: On, cached: LspHealth | undefined, runs: string[][], writes: Array<{ path: string; text: string }>) {
+  const cachePath = '/home/t/.claude/pipeline/lsp-health.json'
+  on('env.get', async (_, e) => ({ value: e.name === 'HOME' ? '/home/t' : undefined }))
+  on('fs.exists', async (_, e) => ({ value: e.path === '/home/t/.claude/pipeline' || (e.path === cachePath && !!cached) }))
+  on('fs.list', async () => ({ value: [] }))
+  on('fs.read', async (_, e) => (e.path === cachePath && cached ? { value: JSON.stringify({ at: Date.now(), health: cached }) } : { deny: `ENOENT ${e.path}` }))
+  on('fs.write', async (_, e) => {
+    writes.push({ path: e.path, text: e.text })
+    return { value: undefined }
+  })
+  on('process.run', async (_, e) => {
+    runs.push([...e.argv])
+    return { value: { exitCode: 0, stdout: JSON.stringify(healthy), stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+  })
+  on('command.run', async () => ({}))
+  on('ui.open', async () => ({ value: { isPlaced: true as const } }))
+  on('ui.invalidate', async () => ({ value: undefined }))
+}
+
+test('a fresh shared cache is used without running the script', async ($, on) => {
+  const runs: string[][] = []
+  const writes: Array<{ path: string; text: string }> = []
+  withCache(on, { ...healthy, lsp_ok: 9 }, runs, writes)
+  await $.command.run(open)
+  const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
+  expect(await ui.find({ text: /^LSP ✓ 9 ok · 0 err/ })).toBeDefined()
+  expect(runs.filter(a => a.includes('--health'))).toEqual([])
+  expect(writes).toEqual([])
+})
+
+test('a script run shares its result through the cache file', async ($, on) => {
+  const runs: string[][] = []
+  const writes: Array<{ path: string; text: string }> = []
+  withCache(on, undefined, runs, writes)
+  await $.command.run(open)
+  await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
+  expect(runs.filter(a => a.includes('--health'))).toHaveLength(1)
+  expect(writes.map(w => w.path)).toEqual(['/home/t/.claude/pipeline/lsp-health.json'])
+  expect(JSON.parse(writes[0]?.text ?? '{}').health).toEqual(healthy)
 })
