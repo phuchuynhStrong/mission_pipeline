@@ -11,6 +11,11 @@ Constraints: do only this task. Do not push. Do not run `flutter run`. Do not ru
 integration tests. Read your coordinator follow-ups at natural checkpoints and once before
 you finish. Finish with ONE `worker_done` carrying a three-sentence summary and an explicit
 --outcome.
+Code search: for Dart symbols (definitions, references, callers, types), use the `LSP` tool
+first and trust its results without re-reading every file (load it with ToolSearch
+`select:LSP` if it is not loaded). Use Grep for strings, comments, config, generated code, and
+non-Dart files. Before deleting a symbol or changing a signature, also run Grep to catch string
+and codegen uses.
 ```
 
 ## reader
