@@ -1,7 +1,22 @@
 import { test, expect } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { PANE, ageOf, badgeOf, isClosed, markerOf, rowsOf, stageWordOf, switchArgv, toneOf, trackOf } from './register'
+import {
+  PANE,
+  ageOf,
+  badgeOf,
+  healthArgv,
+  healthLineOf,
+  isClosed,
+  markerOf,
+  parseHealth,
+  rowsOf,
+  stageWordOf,
+  switchArgv,
+  toneOf,
+  trackOf,
+} from './register'
+import type { LspHealth } from './register'
 import type { Mission } from '../types'
 
 const sample: Mission = {
@@ -265,4 +280,76 @@ test('the pane says so when no mission exists', async ($, on) => {
   await $.command.run(open)
   const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
   expect(await ui.find({ text: 'No open missions.' })).toBeDefined()
+})
+
+const healthy: LspHealth = {
+  since: '2026-10-11',
+  lsp_ok: 5,
+  lsp_err: 0,
+  last_at: '2026-10-17T10:00:00Z',
+  last_ok: true,
+  last_error: null,
+  dart_lsp: 5,
+  dart_total: 10,
+}
+
+/** Answers the stats script's --health call with `stdout`, and any other command with `{}`. */
+function fakeStats(on: On, stdout: string, exitCode = 0) {
+  on('process.run', async (_, e) => ({
+    value: { exitCode: e.argv.includes('--health') ? exitCode : 0, stdout: e.argv.includes('--health') ? stdout : '{}', stderr: exitCode ? 'boom' : '', isStdoutTruncated: false, isStderrTruncated: false },
+  }))
+}
+
+test('healthArgv runs the stats script in health mode for 7 days', () => {
+  expect(healthArgv('/p/scripts/search_stats.py')).toEqual(['python3', '-I', '/p/scripts/search_stats.py', '--health', '--days', '7'])
+})
+
+test('parseHealth takes the health line and refuses anything else', () => {
+  expect(parseHealth(JSON.stringify(healthy))).toEqual(healthy)
+  expect(parseHealth('{"ok":true}')).toBeUndefined()
+  expect(parseHealth('not json')).toBeUndefined()
+})
+
+test('healthLineOf: green when the last call answered, red when it failed, dim when idle or unavailable', () => {
+  const now = Date.parse('2026-10-17T10:12:00Z')
+  expect(healthLineOf(healthy, '', now)).toEqual({ text: 'LSP ✓ 5 ok · 0 err · last 12m · Dart share 50% (5/10) · 7d', tone: 'ok' })
+  const broken = { ...healthy, lsp_err: 3, last_ok: false, last_error: 'No LSP server available for file type .dart' }
+  expect(healthLineOf(broken, '', now)).toEqual({ text: 'LSP ✗ 5 ok · 3 err · last error: No LSP server available for file type .dart', tone: 'err' })
+  expect(healthLineOf({ ...broken, last_error: 'x'.repeat(100) }, '', now)?.text).toBe(`LSP ✗ 5 ok · 3 err · last error: ${'x'.repeat(60)}`)
+  const idle = { ...healthy, lsp_ok: 0, last_at: null, last_ok: null, dart_lsp: 0 }
+  expect(healthLineOf(idle, '', now)).toEqual({ text: 'LSP · no calls in 7d', tone: 'idle' })
+  expect(healthLineOf({ ...healthy, dart_total: 0, dart_lsp: 0 }, '', now)?.text).toContain('Dart share 0% (0/0)')
+  expect(healthLineOf(undefined, 'exit 1: boom', now)).toEqual({ text: 'LSP · stats unavailable: exit 1: boom', tone: 'idle' })
+  expect(healthLineOf(undefined, '', now)).toBeUndefined()
+})
+
+test('the pane draws the LSP line above the legend', async ($, on) => {
+  fakeFs(on, [sample])
+  fakeStats(on, JSON.stringify(healthy))
+  await $.command.run(open)
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'pipeline', surface, component: 'Pane', requestId: PANE, props })
+    const line = await ui.find({ type: 'Text', text: /^LSP ✓ 5 ok · 0 err · last \S+ · Dart share 50% \(5\/10\) · 7d$/ })
+    expect(line).toBeDefined()
+    expect(line?.props.color).toBe('green')
+  }
+})
+
+test('the LSP line shows with no open mission too', async ($, on) => {
+  fakeFs(on, [])
+  fakeStats(on, JSON.stringify({ ...healthy, last_ok: false, lsp_err: 1, last_error: 'Error: timed out' }))
+  await $.command.run(open)
+  const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
+  expect(await ui.find({ text: 'No open missions.' })).toBeDefined()
+  const line = await ui.find({ type: 'Text', text: 'LSP ✗ 5 ok · 1 err · last error: Error: timed out' })
+  expect(line).toBeDefined()
+  expect(line?.props.color).toBe('red')
+})
+
+test('a failed stats run says so instead of keeping old numbers', async ($, on) => {
+  fakeFs(on, [sample])
+  fakeStats(on, '', 1)
+  await $.command.run(open)
+  const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
+  expect(await ui.find({ text: 'LSP · stats unavailable: exit 1: boom' })).toBeDefined()
 })

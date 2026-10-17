@@ -156,6 +156,85 @@ async function switchTo($: EngineInterface, row: Row) {
   }
 }
 
+/** The `--health` JSON line of scripts/search_stats.py: LSP call results and the Dart LSP share. */
+export type LspHealth = {
+  since: string
+  lsp_ok: number
+  lsp_err: number
+  last_at: string | null
+  last_ok: boolean | null
+  last_error: string | null
+  dart_lsp: number
+  dart_total: number
+}
+export type HealthTone = 'ok' | 'err' | 'idle'
+export type HealthLine = { text: string; tone: HealthTone }
+const HEALTH_COLOR: Record<HealthTone, string | undefined> = { ok: 'green', err: 'red', idle: undefined }
+const HEALTH_DAYS = 7
+const HEALTH_MS = 10 * 60 * 1000
+let health: LspHealth | undefined
+let healthProblem = ''
+let healthBusy = false
+
+/** Pure: the argv that asks the stats script for the board's health line. */
+export function healthArgv(script: string, days = HEALTH_DAYS): string[] {
+  return ['python3', '-I', script, '--health', '--days', String(days)]
+}
+
+/** Pure: the script's stdout as LspHealth, or undefined when it is not that shape. */
+export function parseHealth(stdout: string): LspHealth | undefined {
+  try {
+    const h = JSON.parse(stdout) as LspHealth
+    const counts = [h.lsp_ok, h.lsp_err, h.dart_lsp, h.dart_total]
+    return counts.every(n => typeof n === 'number') && typeof h.since === 'string' ? h : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Pure: the board's LSP line. Green when the last LSP call answered, red when it failed, dim
+ * when nothing called LSP in the window or the script could not run; undefined before the
+ * first run ends.
+ */
+export function healthLineOf(h: LspHealth | undefined, problem: string, now: number, days = HEALTH_DAYS): HealthLine | undefined {
+  if (!h) return problem ? { text: `LSP · stats unavailable: ${problem}`, tone: 'idle' } : undefined
+  if (h.last_ok === null) return { text: `LSP · no calls in ${days}d`, tone: 'idle' }
+  const counts = `${h.lsp_ok} ok · ${h.lsp_err} err`
+  if (h.last_ok === false) {
+    return { text: `LSP ✗ ${counts} · last error: ${(h.last_error ?? '').slice(0, 60)}`, tone: 'err' }
+  }
+  const pct = h.dart_total ? Math.round((100 * h.dart_lsp) / h.dart_total) : 0
+  const age = ageOf(h.last_at ?? '', now)
+  return {
+    text: `LSP ✓ ${counts} · last ${age || '?'} · Dart share ${pct}% (${h.dart_lsp}/${h.dart_total}) · ${days}d`,
+    tone: 'ok',
+  }
+}
+
+async function refreshHealth($: EngineInterface) {
+  if (healthBusy) return
+  healthBusy = true
+  try {
+    const script = `${$.plugin.root}/scripts/search_stats.py`
+    const { exitCode, stdout, stderr } = await $.process.run(healthArgv(script), { timeoutMs: 60000 })
+    const parsed = exitCode === 0 ? parseHealth(stdout) : undefined
+    // A failed run clears the old numbers: stale green must not hide a broken check.
+    health = parsed
+    healthProblem = parsed
+      ? ''
+      : exitCode === 0
+        ? 'unreadable output'
+        : `exit ${exitCode}: ${(stderr || stdout).trim().slice(0, 80)}`
+  } catch (err) {
+    health = undefined
+    healthProblem = err instanceof Error ? err.message.slice(0, 80) : String(err).slice(0, 80)
+  } finally {
+    healthBusy = false
+  }
+  $.ui.invalidate('ui.render')
+}
+
 const POLL_MS = 3000
 let lastSeen = ''
 
@@ -196,6 +275,8 @@ export const register: Register = (on, options) => {
     await $.command.register({ name: 'pboard', description: 'Open the pipeline mission board' })
     await load($, rootOption)
     $.clock.every(POLL_MS, () => void load($, rootOption))
+    void refreshHealth($)
+    $.clock.every(HEALTH_MS, () => void refreshHealth($))
     const open = cache.some(m => !isClosed(m))
     if (open) void $.ui.open({ id: PANE, title: 'Pipeline' })
     return next(e)
@@ -203,6 +284,7 @@ export const register: Register = (on, options) => {
 
   on('command.run', { command: 'pboard' }, async $ => {
     await load($, rootOption)
+    void refreshHealth($)
     // The person asked for the board: hand it the keyboard so hotkeys and Enter work at once.
     await $.ui.open({ id: PANE, title: 'Pipeline', focus: true })
     return { text: 'Pipeline board opened. ctrl+x tab focuses it; a row digit or Enter presses switch.' }
@@ -211,12 +293,20 @@ export const register: Register = (on, options) => {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const rows = rowsOf(cache, Date.now())
+    const line = healthLineOf(health, healthProblem, Date.now())
+    const healthText = line ? (
+      <Text key="lsp-health" color={HEALTH_COLOR[line.tone]} dimColor={line.tone === 'idle'} wrap="truncate-end">
+        {line.text}
+      </Text>
+    ) : null
 
     if (rows.length === 0) {
       return (
         <Box flexDirection="column">
           <Text>No open missions.</Text>
           <Text dimColor>/pipeline &lt;ticket&gt; starts one.</Text>
+          {healthText && <Text> </Text>}
+          {healthText}
         </Box>
       )
     }
@@ -263,6 +353,7 @@ export const register: Register = (on, options) => {
           )
         })}
         <Text> </Text>
+        {healthText}
         <Box flexDirection="row" gap={2}>
           {LEGEND.map(([tone, word]) => (
             <Text key={tone} color={MARKER_COLOR[tone]}>
