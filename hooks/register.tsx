@@ -278,6 +278,42 @@ function watchHealth($: EngineInterface, option: string): Promise<void> {
   return refreshHealth($, option)
 }
 
+/**
+ * Pure: PR number to PR URL, from each mission's `pr` stage, closed missions too. A number two
+ * missions give different URLs (two repos) is left out: a wrong link is worse than none.
+ */
+export function prLinksOf(list: Mission[]): Map<number, string> {
+  const urls = new Map<number, Set<string>>()
+  for (const m of list) {
+    const pr = m.stages?.pr
+    if (!pr?.number || !/^https?:\/\//.test(pr.url ?? '')) continue
+    urls.set(pr.number, (urls.get(pr.number) ?? new Set()).add(pr.url!))
+  }
+  const links = new Map<number, string>()
+  for (const [n, set] of urls) {
+    const [url] = set
+    if (set.size === 1 && url) links.set(n, url)
+  }
+  return links
+}
+
+/** Code fences, code spans and markdown links: kept as written. */
+const KEEP = /(```[\s\S]*?(?:```|$)|`[^`\n]*`|\[[^\]\n]*\]\([^)\n]*\))/
+/** `#1234` standing alone: not in a word, a path, an entity (`&#12;`) or a URL fragment. */
+const PR_REF = /(?<![\w/&#])#(\d+)(?!\w)/g
+
+/** Pure: markdown with each `#N` that `links` knows turned into `[#N](url)`; the rest as it was. */
+export function linkPrs(text: string, links: Map<number, string>): string {
+  if (links.size === 0 || !text.includes('#')) return text
+  return text
+    .split(KEEP)
+    .map((part, i) => (i % 2 ? part : part.replace(PR_REF, (ref, n) => {
+      const url = links.get(Number(n))
+      return url ? `[${ref}](${url})` : ref
+    })))
+    .join('')
+}
+
 const POLL_MS = 3000
 let lastSeen = ''
 
@@ -333,6 +369,12 @@ export const register: Register = (on, options) => {
     // The pane is already up; the LSP line fills in when this ends (a cache hit, or one scan).
     await watchHealth($, rootOption)
     return { text: 'Pipeline board opened. ctrl+x tab focuses it; a row digit or Enter presses switch.' }
+  })
+
+  // Draw-time only: the stored reply and what the model reads keep the plain `#N`.
+  on('ui.render', { component: 'AssistantMessage' }, async ($, e, next) => {
+    const text = linkPrs(e.props.text, prLinksOf(cache))
+    return next(text === e.props.text ? e : { ...e, props: { ...e.props, text } })
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {

@@ -9,8 +9,10 @@ import {
   healthArgv,
   healthLineOf,
   isClosed,
+  linkPrs,
   markerOf,
   parseHealth,
+  prLinksOf,
   rowsOf,
   stageWordOf,
   switchArgv,
@@ -405,4 +407,37 @@ test('a script run shares its result through the cache file', async ($, on) => {
   expect(runs.filter(a => a.includes('--health'))).toHaveLength(1)
   expect(writes.map(w => w.path)).toEqual(['/home/t/.claude/pipeline/lsp-health.json'])
   expect(JSON.parse(writes[0]?.text ?? '{}').health).toEqual(healthy)
+})
+
+const withPr = (id: string, number: number, url: string): Mission => ({
+  ...sample,
+  id,
+  stages: { ...sample.stages, pr: { status: 'active', number, url } },
+})
+
+test('prLinksOf maps each PR number to its URL and drops unset or clashing ones', () => {
+  const a = 'https://github.com/o/a/pull/12'
+  const links = prLinksOf([
+    withPr('m1', 12, a),
+    withPr('m2', 12, a),
+    withPr('m3', 0, ''),
+    withPr('m4', 7, 'https://github.com/o/a/pull/7'),
+    withPr('m5', 7, 'https://github.com/o/b/pull/7'),
+    withPr('m6', 9, 'javascript:alert(1)'),
+    sample,
+  ])
+  expect([...links]).toEqual([[12, a]])
+})
+
+test('linkPrs links known #N in prose and leaves code, links and fragments alone', () => {
+  const links = new Map([[12, 'https://github.com/o/a/pull/12']])
+  expect(linkPrs('PR #12 is green (#12).', links)).toBe(
+    'PR [#12](https://github.com/o/a/pull/12) is green ([#12](https://github.com/o/a/pull/12)).',
+  )
+  expect(linkPrs('#13 and #123 and #12a', links)).toBe('#13 and #123 and #12a')
+  expect(linkPrs('run `gh pr view #12`', links)).toBe('run `gh pr view #12`')
+  expect(linkPrs('```\n#12\n```', links)).toBe('```\n#12\n```')
+  expect(linkPrs('see [#12](https://x/pull/12)', links)).toBe('see [#12](https://x/pull/12)')
+  expect(linkPrs('https://x/y#12 and a/#12 and &#12;', links)).toBe('https://x/y#12 and a/#12 and &#12;')
+  expect(linkPrs('#12', new Map())).toBe('#12')
 })
