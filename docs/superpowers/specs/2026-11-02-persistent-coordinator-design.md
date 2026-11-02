@@ -1,7 +1,7 @@
 # Persistent coordinator — design
 
-Date: 2026-11-02. Status: draft, waiting for user review. Builder check and hawkeye review
-done; fixes applied.
+Date: 2026-11-02. Status: approved by the user, then changed by 8 live tests and a second
+hawkeye review (Orca 1.4.246). Changes since approval are marked in the text.
 
 ## Problem
 
@@ -37,12 +37,11 @@ part works on its own (user, 2026-11-02).
 |---|---|---|
 | `ask` from a plain terminal fails: `dispatch_inactive: ask requires an active supervised Dispatch` | VERIFIED | live test L1, 2026-11-02 |
 | `send --to run:<id> --type question` from a plain terminal works; the coordinator sees `from` = sender's terminal handle | VERIFIED | live test L1 |
-| `reply --id <msg>` delivers a `status` message, subject `Re: <subject>`, to the sender's terminal mailbox; the sender reads it with a plain `check` | VERIFIED | live test L1 |
-| An outside `question` is consumed by the first `check` (plain, `--run`, or `--wait`); a second check returns nothing; no Delivery id is shown | VERIFIED | live test L2 |
-| A consumed message stays in `orchestration inbox` with `to: run:<id>` and `handled: true` | VERIFIED | live test L2 |
-| `inbox` has `--limit` only: no recipient filter, no paging | VERIFIED | `orca orchestration inbox --help` |
+| `reply --id <msg>` delivers a `status` message, subject `Re: <subject>`, to the sender's terminal mailbox; with `--full` its `thread_id` is the question's message id | VERIFIED | live test L1; `inbox --full` re-check |
+| Orca 1.4.246: a consuming `check` returns the oldest unread batch **and marks it handled**; no `--ack` is needed, and `--ack` is a no-op kept for older Orca; a lost check response is recovered with the `--retry-request` it printed | VERIFIED | `orca orchestration check --help` (1.4.246) |
+| So no message replays after a crash, for any type (worker messages not tested live) | VERIFIED (outside questions, L2) / INFERRED (worker messages) | live test L2; `check --help` |
+| A consumed message stays in `orchestration inbox`. `inbox --terminal run:<id> --limit <n> --full --json` lists only that mailbox, newest first, with `sequence`, `thread_id`, `read`, full `payload` and body. Without `--full`, bodies are cut to 200 characters | VERIFIED | `inbox --help`; live re-check on the test Run |
 | The shared Run id is saved in `~/.claude/pipeline/coordinator.json`; Binding rejoins it | VERIFIED | `SKILL.md:56`, `:73-82` |
-| A bound Run replays the same Delivery until `--ack` or all its messages are marked read | VERIFIED (help text); **not seen for outside `send` messages** (L2) | `orca orchestration check --help` |
 | `terminal send` needs a live terminal; it returns a "queued/input-accepted receipt", but nothing replays a message the session never handled | VERIFIED (live terminal, receipt), INFERRED (no replay) | `orca --help`; `orca terminal send --help` |
 | `orca agent launch --surface terminal` always runs the agent CLI in a terminal, whatever the Chat UI setting | VERIFIED | `orca agent launch --help` |
 | A message with no mission owner is dropped today ("take no action") | VERIFIED | `SKILL.md:276-282` |
@@ -54,11 +53,11 @@ part works on its own (user, 2026-11-02).
 | Greptile delay and merge watcher are background Bash in the coordinator session | VERIFIED | `SKILL.md:143-145`; `references/orca-commands.md:84-96` |
 | Mission state is keyed by repo folder and id (`<slug>/<id>.json`) | VERIFIED | `scripts/state.py:37-38` |
 | `state.py list` and the board read only `*.json` inside sub-folders of `~/.claude/pipeline` | VERIFIED | `scripts/state.py` `cmd_list`; `hooks/register.tsx:333-335` |
-| `run-use` from a new terminal takes over a live Run; unacked messages replay under a new Delivery id | VERIFIED | shared-run design, T1 step 2 |
+| `run-use` from a new terminal takes over a live Run | VERIFIED | shared-run design, T1 step 2; L4 |
 | Orca automations take a cron trigger, a `--precheck` command and `--reuse-session` | VERIFIED | `orca automations create --help` |
 | A worker of one Run cannot `send` to another Run: `dispatch_run_mismatch` | VERIFIED | live test L1b |
-| Whether a reply carries any id linking it to the question (only `Re: <subject>` was seen) | UNKNOWN | — |
 | What happens to a reply when the sender's terminal closes before it reads it | UNKNOWN | — |
+| An Orca terminal knows its own handle from `ORCA_TERMINAL_HANDLE` | VERIFIED | environment of this session |
 | Input typed by `terminal send` during a turn is queued and handled after the turn | VERIFIED (one run) | live test L3 |
 | Fencing shows as `run-current --from <handle>` → `runId: null`; a permission prompt shows in `terminal read --screen` | VERIFIED | live tests L4, L6 |
 | Prefix rules like `Bash(orca status:*)` match; deny rules block; off-list prompts. Matching of `${CLAUDE_PLUGIN_ROOT}`, `$(...)` and redirects was not tested | VERIFIED / UNKNOWN | live test L6 |
@@ -76,8 +75,11 @@ part works on its own (user, 2026-11-02).
   --prompt "/pipeline"`.
 - **`/pipeline` with no arguments** (new): run Binding, re-arm watchers (§10), recover open
   asks (§4), arm the wait, reply with status. No mission is created.
-- At Binding the session saves its terminal handle in `coordinator.json` (new field
-  `terminal`, via `state.py run`).
+- At Binding the session saves its terminal handle (`$ORCA_TERMINAL_HANDLE`) in
+  `coordinator.json` (new field `terminal`, via `state.py run`). `state.py run --set` must
+  keep every other field in the file; today it rewrites only `run_id`, `created`, `updated`
+  (`scripts/state.py:199-201`). The watchdog's launch lock lives in its own file,
+  `~/.claude/pipeline/watchdog.json`, so the two writers never touch the same file.
 
 ### 2. The wait is always armed (changes `SKILL.md` Waiting)
 
@@ -100,7 +102,7 @@ session that is itself a worker of another Run cannot send to the shared Run
 
 | | `send` question (main channel) | `terminal send` (escape hatch) |
 |---|---|---|
-| Command | `orca orchestration send --to run:<shared> --type question --subject "<tag> <title>" --body "<text>"` | `orca terminal send --terminal <coordinator> --text … --enter` |
+| Command | `orca orchestration send --to run:<shared> --type question --subject "<title>" --body "<text>" --json` (keep the returned `messageId`) | `orca terminal send --terminal <coordinator> --text … --enter` |
 | Use for | everything that must arrive: status, details, start, stop, decisions, any request | anything else a human would type; never for a message that must arrive |
 | Coordinator down | kept in the Run until read | not replayed |
 | Answer | `reply` → `status` message in the sender's terminal mailbox, subject `Re: <subject>` | screen text, read with `terminal read` |
@@ -108,34 +110,41 @@ session that is itself a worker of another Run cannot send to the shared Run
 - Tools find `<shared>` with `python3 -I <plugin root>/scripts/state.py run` (full path, so
   it works from any repo).
 - The tool waits for the answer with `orca orchestration check --wait --timeout-ms <n>
-  --json` in its own terminal and matches it by subject.
-- **Tag (my call):** the subject starts with a unique tag the tool picks (e.g. `[t-<random>]`),
-  because no reply-to id was seen (UNKNOWN). The coordinator keeps the subject in its reply.
+  --full --json` in its own terminal and matches the reply whose `thread_id` is its
+  `messageId`. One batch can hold several replies; the tool keeps the ones it did not match.
+- A tool that lost a `check` result (crash, context loss) finds the reply with
+  `orca orchestration inbox --terminal <own handle> --limit <n> --full --json`, matched by
+  `thread_id`.
 - A tool that times out waits again with `check --wait`. It never sends the question again,
   because the coordinator would act twice.
+- `reply` has only `--id` and `--body`; Orca adds `Re: <subject>` itself.
 - The sender must stay in a live Orca terminal until it reads the answer (what happens to a
   reply for a closed terminal is UNKNOWN).
 
 ### 4. Routing and the handled log
 
-**Routing**, for each message in a batch, in this order:
+**No replay, no ack.** On Orca 1.4.246 a consuming `check` marks its batch handled, and
+nothing replays after a crash, for any message type. So the handled log (below) plus an
+inbox scan is the only safety. All `--ack` use in the skill is removed (§12).
+
+**Routing**, for each message (from the wait or from the scan), in this order:
 
 1. Message id has an `answered` line in the handled log → skip it.
 2. Message id has a `started` line but no `answered` → **recovery** (below).
-3. Payload missing or not JSON: type `question` → outside ask; any other type → notice (§6).
-4. Payload has a `dispatchId` and `state.py owner` exits 0 → the current mission rules
-   (unchanged).
-5. Type `question`, and either no `dispatchId` or `owner` exits 3 → **outside ask**. (An ask
-   from a session that is itself a worker in another Run carries that Run's `dispatchId`,
-   INFERRED; L1b checks.)
-6. Anything else (other types with no owner, `owner` exit 4 or other codes) → notice (§6),
-   no action.
+3. No `dispatchId` in the payload (or payload missing / not JSON): type `question` →
+   **outside ask**; any other type → notice (§6), no action.
+4. `dispatchId` and `state.py owner` exits 0 → the current mission rules (unchanged).
+5. `dispatchId` and `owner` exits 3, 4 or anything else → notice (§6), no action. A late
+   message from a worker of a done or aborted mission never gets user authority.
+
+**Every** message that goes through routing gets `started` before any action and `answered`
+after it (my call; mission messages too, so the scan never runs a worker message twice).
 
 **Outside ask:** do what it asks, as if the user typed it, then `orchestration reply`.
 
-- Every ask is answered **in the same wake, before the ack**. A long request ("start X and
-  tell me when the spec is done") gets an immediate reply ("started X; ask for status") and
-  is never held open.
+- Every outside ask is answered **in the same wake**. A long request ("start X and tell me
+  when the spec is done") gets an immediate reply ("started X; ask for status") and is
+  never held open.
 - Predefined actions (user): status of all missions, details of one mission, start a
   mission (same as `/pipeline <args>`), stop a mission (Abort, `SKILL.md:181`). Any other
   request is handled like a request the user types.
@@ -143,19 +152,27 @@ session that is itself a worker of another Run cannot send to the shared Run
 - Never answered with "Decide yourself…"; that stays for mission workers only.
 
 **Handled log:** `~/.claude/pipeline/handled.jsonl`, one line per event:
-`{"msg_id", "delivery_id", "from", "kind", "status": "started|answered", "at", "summary"}`.
+`{"msg_id", "seq", "type", "from", "kind", "status": "started|answered", "at", "summary"}`.
 Written only through `state.py` (new subcommands; names left to the builder).
 
-- Order for every outside ask: write `started` → act → `reply` → write `answered` → ack the
-  batch (the ack stays last, `SKILL.md:284`).
-- **Orca does not replay an outside question** (L2): the first `check` consumes it. So the
-  handled log is the main safety, and a crash after `check` but before `started` would lose
-  the message. **Inbox scan** closes that gap: at Binding and after every wake, before the
-  wait is re-armed, read `orca orchestration inbox --limit <n> --json`, keep rows with
-  `to: run:<shared>` and `type: question`, and treat each one with no `answered` line as a
-  new message (routing from step 1). `inbox` has no recipient filter or paging, so `<n>`
-  must cover the busiest gap between scans; the value and what to do when the oldest row is
-  still unhandled are left to the builder.
+- Order for every message: write `started` → act → (`reply` for an outside ask) → write
+  `answered`.
+- **Inbox scan:** at Binding and after every wake, before the wait is re-armed, run
+  `orca orchestration inbox --terminal run:<shared> --limit 100 --full --json` (newest
+  first). Every row with `sequence` above the **floor** and no `answered` line goes through
+  routing from step 1, oldest first. This covers a crash after `check` but before `started`,
+  for every message type.
+- **Floor:** the highest `sequence` at or below which every row has an `answered` line;
+  stored in `~/.claude/pipeline/scan.json` through `state.py`. After each scan the floor
+  moves up as far as it can.
+- **Window too small:** if the oldest returned row is still above the floor, rows may be
+  hidden. Write a notice (§6) and scan with a larger `--limit` once. The `inbox` help shows
+  no paging (VERIFIED), so the largest limit Orca accepts is left to the builder to check.
+- **Prune:** handled-log lines with `seq` at or below the floor may be pruned; nothing above
+  the floor is ever pruned.
+- **Cutover seed:** at the first Binding of the dedicated coordinator, the floor is set to
+  the highest `sequence` in the shared Run's inbox, so questions the old session already
+  read and dropped are not run days later (my call).
 - **Recovery** (routing step 2, and at Binding for every `started` line with no `answered`):
   check whether the action happened (e.g. `state.py show`).
   - Done → reply with the result, write `answered`.
@@ -173,15 +190,16 @@ Written only through `state.py` (new subcommands; names left to the builder).
 - **Safety net (my call):** when an outside ask leads to a decision or a pending item, the
   coordinator appends it to `~/.claude/pipeline/coordinator-notes.md` in the same step that
   writes `answered`. Notes are re-read at Binding, and after any compact through a
-  `SessionStart` hook with matcher `compact` that prints the notes into context (INFERRED;
-  L7). A normal turn never reads them.
+  `SessionStart` hook with matcher `compact` that prints the notes into context (VERIFIED
+  for a manual `/compact`, L7). A normal turn never reads them.
 - **Mission files:** `mission.md`, readings, review reports, `pr-body.md`, its split files,
   `greptile-review.md`, `pr.json`, `pr-final.json` move from `<scratchpad>/pipeline/<id>/`
   (`SKILL.md:51-55`) to `~/.claude/pipeline/files/<repo-basename>/<id>/`. The scratchpad is
   per session and is gone after a restart. The `pr-final.json` path in
   `references/orca-commands.md:93` moves too.
-- `inbox.json` stays in the session's scratchpad. An unacked batch replays after a restart,
-  and a shared file would let a fenced old session overwrite the new session's batch.
+- `inbox.json` stays in the session's scratchpad. After a restart the inbox scan (§4) finds
+  anything the old batch held, and a shared file would let a fenced old session overwrite
+  the new session's batch.
 - **Writes under `~/.claude/pipeline` prompt** with the Write tool, even with
   `additionalDirectories` (L6). So the coordinator never uses Write or Edit there: every
   file it writes (`mission.md`, notes, notices, handled log) goes through `state.py` or a
@@ -229,13 +247,13 @@ The coordinator acts on it exactly as on the user's chat reply.
   senior's handle (§3: not replayed). My call: the status reply gives the senior's handle;
   the coordinator does not relay a brainstorm.
 
-### 9. Watchdog (my call; mechanism open)
+### 9. Watchdog (my call; launchd)
 
 Runs every minute.
 
 1. Saved handle in `coordinator.json` is not in `orca terminal list --json` → launch a new
-   coordinator (§1 command). The new session's Binding takes over the Run; unacked messages
-   replay.
+   coordinator (§1 command). The new session's Binding takes over the Run; its inbox scan
+   (§4) finds anything the old session read but did not handle.
 2. Handle is live but not working → do **not** launch. "Not working" is any of:
    `orca orchestration run-current --from <handle>` is not the shared Run (fenced, L4);
    `terminal read --screen` shows a permission prompt ("Do you want to proceed?", "Do you
@@ -244,14 +262,13 @@ Runs every minute.
    "coordinator not waiting: <handle>". This covers a Binding failure, `consumer_fenced`,
    Claude exited to the shell, and a stalled permission prompt.
 3. **Launch lock:** no new launch within 10 min of the last one (time kept in
-   `coordinator.json`). A second failed launch in a row → notice, stop launching until the
+   `watchdog.json`). A second failed launch in a row → notice, stop launching until the
    user clears it.
 
-- Mechanism: an Orca automation with `--precheck`, or a macOS launchd agent. Pick after L5.
-- **After a reboot:** `orca` commands need a running Orca runtime (`orca --help`: "Most
-  commands require a running Orca runtime"). An Orca automation probably cannot run while
-  Orca is closed (UNKNOWN; L5 checks). A launchd agent can run `orca open` at login and
-  then do the same checks, so the reboot case points to launchd.
+- **Mechanism: a macOS launchd agent** (my call, after L5). It runs every minute and at
+  login. If `orca status` fails, it runs `orca open` ("Launch Orca and wait for the runtime
+  to be reachable", `orca --help`) first. An Orca automation works while Orca runs (L5), but
+  whether it runs after a reboot with Orca closed is UNKNOWN.
 - The Mac must be awake for any of this; how (e.g. `caffeinate`) is left to the user.
 
 **When the coordinator starts:**
@@ -289,12 +306,13 @@ the new session re-arms them.
 - **Allowlist, narrow (my call).** Bare `orca`, `gh` or `git` would allow anything
   (`orca terminal send`, `orca agent launch`, `gh api`, `git -c alias…`), so:
   - one rule per `orca` subcommand the skill uses (`references/orca-commands.md`):
-    `orca status`, `orca orchestration check|reply|run-current|run-show|run-use|run-create|
-    worker-start|worker-show|worker-release|worker-stop|worker-abandon|worker-list`,
+    `orca status`, `orca orchestration check|reply|inbox|run-current|run-show|run-use|
+    run-create|worker-start|worker-show|worker-release|worker-stop|worker-abandon|worker-list`,
     `orca linear issue`, `orca linear status set`, `orca worktree create|rm`,
     `orca terminal close|rename`, `orca repo list`;
   - `gh pr create|list|view` only;
   - `python3 -I <plugin root>/scripts/state.py`;
+  - `pgrep -f` (the one-wait guard, `SKILL.md:289`);
   - **new plugin scripts** for everything else, each taking a mission id and touching only
     that mission's paths: git steps (branch, commit, push to the mission branch, `ls-files`
     checks), file moves and removes in the target repo (`SKILL.md:103-107`, `:245-247`,
@@ -310,13 +328,16 @@ the new session re-arms them.
 - `skills/pipeline/SKILL.md`: Binding, Waiting (§2), routing (§4), outside asks, decisions
   (§8), notices (§6), target repo (§7), watchers at Binding (§10), new places (§5), plugin
   scripts instead of raw git/rm/mv (§11), `/pipeline` with no arguments (§1), red flag
-  "This ask has no owner, I'll skip it." → outside ask; answer it.
+  "This ask has no owner, I'll skip it." → outside ask; answer it. Remove every `--ack`
+  and replay rule (`SKILL.md:284`, `:291-294`): on Orca 1.4.246 a consuming check marks
+  its batch handled.
 - `skills/pipeline/references/orca-commands.md`: `--worktree path:<repo>`, `--no-parent`,
-  watcher paths, watchers as scripts.
+  watcher paths, watchers as scripts, the inbox scan command, and no `--ack`
+  (`orca-commands.md:56`, `:114-116`).
 - `skills/pipeline/references/roles.md`: any `{scratchpad}` path in a role template moves
   to `files/` (builder checks).
-- `scripts/state.py`: `run` stores `terminal` and launch time; handled-log and notices
-  subcommands.
+- `scripts/state.py`: `run --set` keeps unknown fields and stores `terminal`; handled-log,
+  scan floor and notices subcommands.
 - `hooks/register.tsx`: notices above the rows; coordinator health line from `heartbeat`.
 - New: plugin scripts (§11), watchdog (§9), `SessionStart` compact hook (§5), workspace
   `.claude/settings.json` (§11).
@@ -354,6 +375,7 @@ session after.
 
 ## Left to the builder
 
-- `state.py` subcommand names, handled-log prune rule, plugin script names and split.
+- `state.py` subcommand names, plugin script names and split.
+- The largest `inbox --limit` Orca accepts.
 - Exact text of the `reply` bodies and notices.
 - Board wording for notices and the health line.
