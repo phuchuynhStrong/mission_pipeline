@@ -57,10 +57,22 @@ class FailuresTest(unittest.TestCase):
     def test_failures_pause_after_two(self):
         wd = {"last_launch_ms": NOW - 5 * MIN, "failures": 0, "paused": False, "last_notice": ""}
         watchdog.count_failures(wd, None, NOW)
-        self.assertEqual((wd["failures"], wd["last_launch_ms"], wd["paused"]), (1, None, False))
+        self.assertEqual((wd["failures"], wd["last_launch_ms"], wd["paused"]), (1, NOW - 5 * MIN, False))
         wd["last_launch_ms"] = NOW - 6 * MIN
         watchdog.count_failures(wd, NOW - 7 * MIN, NOW)
         self.assertEqual((wd["failures"], wd["paused"]), (2, True))
+
+    def test_lock_holds_and_launch_counted_once(self):
+        t0 = NOW
+        wd = {"last_launch_ms": t0, "failures": 0, "paused": False}
+        gone = obs(live_handles=set(), heartbeat_ms=None)
+        def step(t):
+            watchdog.count_failures(wd, None, t)
+            return watchdog.decide({**gone, "last_launch_ms": wd["last_launch_ms"],
+                                    "failures": wd["failures"], "paused": wd["paused"]}, t)[0]
+        self.assertEqual((step(t0 + 5 * MIN), wd["failures"]), ("locked", 1))
+        self.assertEqual((step(t0 + 6 * MIN), wd["failures"]), ("locked", 1))
+        self.assertEqual((step(t0 + 10 * MIN), wd["failures"]), ("launch", 1))
 
     def test_too_early_not_counted(self):
         wd = {"last_launch_ms": NOW - 4 * MIN, "failures": 0, "paused": False}
@@ -79,6 +91,8 @@ d = os.environ["FAKE_DIR"]
 with open(os.path.join(d, "argv.log"), "a") as f:
     f.write(json.dumps(sys.argv[1:]) + "\n")
 a = sys.argv[1:]
+if a[:2] == ["orchestration", "run-current"] and os.path.exists(os.path.join(d, "rc_fail")):
+    sys.exit(1)
 if a[:1] == ["status"]:
     sys.exit(int(open(os.path.join(d, "status_rc")).read()))
 canned = {"open": {"ok": True},
@@ -164,6 +178,21 @@ class RunCase(unittest.TestCase):
             self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(len(self.notices()), 1)
         self.assertFalse(any(a[:2] == ["agent", "launch"] for a in self.argv()))
+
+    def test_run_current_failure_is_not_fenced(self):
+        import time
+        self.set("rc_fail", "1")
+        self.wjson("heartbeat", {"at": int(time.time() * 1000), "iso": "", "terminal": "term_a"})
+        r = self.wd("run", "--workspace", "/ws")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "ok"), r.stderr)
+        self.assertEqual(self.notices(), [])
+
+    def test_launch_saves_new_terminal(self):
+        self.wjson("coordinator.json", {"run_id": "run_1", "terminal": "term_a", "created": "c"})
+        self.set("handles", "term_b")
+        self.assertEqual(self.wd("run", "--workspace", "/ws").returncode, 0)
+        c = self.rjson("coordinator.json")
+        self.assertEqual((c["terminal"], c["run_id"], c["created"]), ("term_new", "run_1", "c"))
 
     def test_bad_coord_is_notice_not_launch(self):
         with open(os.path.join(self.root, "coordinator.json"), "w") as f:

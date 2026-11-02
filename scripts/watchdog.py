@@ -55,9 +55,9 @@ def count_failures(wd: dict, heartbeat_ms, now_ms: int) -> None:
     if heartbeat_ms is not None and heartbeat_ms >= last:
         wd["failures"] = 0
         return
-    if now_ms - last >= FAIL_CHECK_MS:
+    if now_ms - last >= FAIL_CHECK_MS and wd.get("failure_counted_for") != last:
         wd["failures"] = wd.get("failures", 0) + 1
-        wd["last_launch_ms"] = None
+        wd["failure_counted_for"] = last  # count each launch once; keep last_launch_ms for the lock
         if wd["failures"] >= 2:
             wd["paused"] = True
 
@@ -89,7 +89,8 @@ def read_file_json(path):
 
 def load_wd():
     data, ok = read_file_json(WATCHDOG)
-    wd = {"last_launch_ms": None, "failures": 0, "paused": False, "last_notice": ""}
+    wd = {"last_launch_ms": None, "failures": 0, "paused": False, "last_notice": "",
+          "failure_counted_for": None}
     if ok and isinstance(data, dict):
         wd.update(data)
     return wd
@@ -126,7 +127,7 @@ def gather(wd):
         try:
             bound = rc["result"]["runId"]
         except (TypeError, KeyError):
-            bound = None
+            bound = shared  # call failed: fence unknown, skip the check
         rd = orca("terminal", "read", "--terminal", saved, "--screen", "--json")
         try:
             screen = "\n".join(rd["result"]["terminal"]["tail"])
@@ -137,6 +138,18 @@ def gather(wd):
             "shared_run": shared, "screen": screen, "heartbeat_ms": hb_ms,
             "last_launch_ms": wd["last_launch_ms"], "failures": wd["failures"],
             "paused": wd["paused"]}, None
+
+
+def find_terminal(data):
+    """First string value starting with term_ anywhere in a launch receipt, or None."""
+    if isinstance(data, str):
+        return data if data.startswith("term_") else None
+    items = data.values() if isinstance(data, dict) else data if isinstance(data, list) else []
+    for v in items:
+        found = find_terminal(v)
+        if found:
+            return found
+    return None
 
 
 def cmd_run(a):
@@ -161,9 +174,14 @@ def cmd_run(a):
     obs.update(last_launch_ms=wd["last_launch_ms"], failures=wd["failures"], paused=wd["paused"])
     action, reason = decide(obs, now_ms)
     if action == "launch":
-        orca("agent", "launch", "--agent", "claude", "--surface", "terminal",
-             "--worktree", f"path:{a.workspace}", "--prompt", "/pipeline", "--json")
+        receipt = orca("agent", "launch", "--agent", "claude", "--surface", "terminal",
+                       "--worktree", f"path:{a.workspace}", "--prompt", "/pipeline", "--json")
         wd["last_launch_ms"] = now_ms
+        term = find_terminal(receipt)
+        if term:
+            coord, ok = read_file_json(state.COORD)
+            if ok:
+                state.write_json(state.COORD, {**(coord or {}), "terminal": term})
     elif action == "notice":
         notice(wd, reason)
     elif action == "ok":
