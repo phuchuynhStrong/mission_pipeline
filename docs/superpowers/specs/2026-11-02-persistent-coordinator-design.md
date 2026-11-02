@@ -138,7 +138,9 @@ inbox scan is the only safety. All `--ack` use in the skill is removed (§12).
    message from a worker of a done or aborted mission never gets user authority.
 
 **Every** message that goes through routing gets `started` before any action and `answered`
-after it (my call; mission messages too, so the scan never runs a worker message twice).
+after it. Mission messages are in scope too, so a `worker_done` or `escalation` consumed
+before a crash is found by the scan and the scan never runs a message twice (user
+decision, 2026-11-02).
 
 **Outside ask:** do what it asks, as if the user typed it, then `orchestration reply`.
 
@@ -260,7 +262,9 @@ Runs every minute.
    want to create", L6); `heartbeat` older than 20 min (15 min wait + grace). Do not
    launch (a second session would fence the first, `SKILL.md:306`). Write a notice (§6):
    "coordinator not waiting: <handle>". This covers a Binding failure, `consumer_fenced`,
-   Claude exited to the shell, and a stalled permission prompt.
+   Claude exited to the shell, and a stalled permission prompt. The watchdog never types
+   into the coordinator terminal, not even `/pipeline` at an idle prompt (user decision,
+   2026-11-02).
 3. **Launch lock:** no new launch within 10 min of the last one (time kept in
    `watchdog.json`). A second failed launch in a row → notice, stop launching until the
    user clears it.
