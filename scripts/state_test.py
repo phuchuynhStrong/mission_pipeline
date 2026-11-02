@@ -104,6 +104,14 @@ class RunTest(StateCase):
         self.assertFalse(os.path.exists(self.coord))
 
 
+    def test_run_empty_terminal_exit3(self):
+        self.state("run", "--set", "run_a")
+        before = self.read(self.coord)
+        self.assertEqual(self.state("run", "--terminal", "").returncode, 3)
+        self.assertEqual(self.state("run", "--set", "run_b", "--terminal", "").returncode, 3)
+        self.assertEqual(self.read(self.coord), before)
+
+
 class NewListTest(StateCase):
     def test_list_ignores_coordinator_file(self):
         self.state("run", "--set", "run_a")
@@ -251,6 +259,32 @@ class ScanTest(StateCase):
         r = self.scan("seed", "--run", "run_a", stdin=inbox(row(20)))
         self.assertEqual(r.returncode, 3)
         self.assertEqual(self.scan("floor").stdout, "12\n")
+
+    def test_seed_floor_below_lowest_unread(self):
+        rows = [row(n) for n in (14, 13, 12, 11, 10)]
+        rows[2]["read"] = 0  # seq 12
+        rows[0]["read"] = False  # seq 14
+        r = self.scan("seed", "--run", "run_a", stdin=inbox(*rows, {**row(5, to="run:other"), "read": 0}))
+        self.assertEqual((r.returncode, r.stdout), (0, "11\n"))
+
+    def test_seed_all_read_takes_max(self):
+        r = self.scan("seed", "--run", "run_a", stdin=inbox(row(14), row(10), row(12)))
+        self.assertEqual(r.stdout, "14\n")
+
+    def test_advance_prune_uses_inbox_sequence_not_line_seq(self):
+        self.scan("seed", "--run", "run_a", stdin=inbox(row(10)))
+        self.answer(11)
+        # msg_15 was recorded with a wrong small --seq; its real row is at 15, above the new floor
+        self.state("handled", "start", "msg_15", "--seq", "11", "--type", "question")
+        self.state("handled", "answer", "msg_15")
+        self.state("handled", "start", "msg_12", "--seq", "12", "--type", "question")
+        r = self.scan("advance", "--run", "run_a", "--limit", "100",
+                      stdin=inbox(row(15), row(12), row(11), row(10)))
+        self.assertEqual((r.returncode, r.stdout), (0, "11\n"))
+        ids = [json.loads(x)["msg_id"] for x in self.read(os.path.join(self.root, "handled.jsonl")).splitlines()]
+        self.assertNotIn("msg_11", ids)
+        self.assertIn("msg_15", ids)
+        self.assertIn("msg_12", ids)
 
     def test_floor_unseeded_exit3(self):
         self.assertEqual(self.scan("floor").returncode, 3)

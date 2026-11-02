@@ -202,6 +202,9 @@ def read_coord():
 
 
 def cmd_run(a):
+    if a.terminal is not None and not a.terminal:
+        print("refused: empty terminal", file=sys.stderr)
+        sys.exit(3)
     data = read_coord()
     if a.set_id is None and a.terminal is not None:
         rid = data.get("run_id") if isinstance(data, dict) else None
@@ -389,8 +392,12 @@ def cmd_scan(a):
         if os.path.exists(SCAN) and read_scan().get("run_id") == a.run:
             print(f"refused: already seeded: {SCAN}", file=sys.stderr)
             sys.exit(3)
-        seqs = [r["sequence"] for r in _matching(read_inbox(), a.run)]
-        floor = max(seqs) if seqs else 0
+        rows = _matching(read_inbox(), a.run)
+        unread = [r["sequence"] for r in rows if "read" in r and r["read"] in (False, 0)]
+        if unread:  # an unread message may still need an answer: keep it above the floor
+            floor = min(unread) - 1
+        else:
+            floor = max((r["sequence"] for r in rows), default=0)
         write_json(SCAN, {"run_id": a.run, "floor": floor, "updated": now()})
         print(floor)
     elif a.action == "floor":
@@ -409,7 +416,8 @@ def cmd_scan(a):
             print(f"window short: {len(rows)} rows, all above floor {data['floor']}; floor kept", file=sys.stderr)
             sys.exit(5)
         floor = next_floor(rows, a.run, data["floor"])
-        keep = [e for e in read_handled() if not (isinstance(e.get("seq"), int) and e["seq"] <= floor)]
+        below = {r.get("id") for r in _matching(rows, a.run) if r["sequence"] <= floor}
+        keep = [e for e in read_handled() if e.get("msg_id") not in below]  # inbox sequence, not the line's seq
         write_json(SCAN, {**data, "run_id": a.run, "floor": floor, "updated": now()})
         if os.path.exists(HANDLED):
             write_text(HANDLED, "".join(json.dumps(e) + "\n" for e in keep))
