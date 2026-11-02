@@ -477,6 +477,7 @@ test('coordinatorLineOf missing/fresh/stale', () => {
   expect(coordinatorLineOf(undefined, now)).toEqual({ text: 'Coordinator · not started', tone: 'idle' })
   expect(coordinatorLineOf('not json', now)).toEqual({ text: 'Coordinator · not started', tone: 'idle' })
   expect(coordinatorLineOf('{"at":"x"}', now)).toEqual({ text: 'Coordinator · not started', tone: 'idle' })
+  expect(coordinatorLineOf('{"at":1e20}', now)).toEqual({ text: 'Coordinator · not started', tone: 'idle' })
   expect(coordinatorLineOf(beat(19), now)).toEqual({ text: 'Coordinator ✓ waiting · 19m', tone: 'ok' })
   expect(coordinatorLineOf(beat(21), now)).toEqual({ text: 'Coordinator ✗ no wait for 21m', tone: 'err' })
 })

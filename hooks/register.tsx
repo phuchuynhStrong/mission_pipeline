@@ -251,7 +251,10 @@ export function coordinatorLineOf(heartbeat: string | undefined, now: number): H
   } catch {
     at = undefined
   }
-  if (typeof at !== 'number' || !Number.isFinite(at)) return { text: 'Coordinator · not started', tone: 'idle' }
+  // toISOString throws on a date out of range (e.g. at=1e20): treat it like a missing beat
+  if (typeof at !== 'number' || Number.isNaN(new Date(at).getTime())) {
+    return { text: 'Coordinator · not started', tone: 'idle' }
+  }
   const age = ageOf(new Date(at).toISOString(), now)
   return now - at < COORDINATOR_STALE_MS
     ? { text: `Coordinator ✓ waiting · ${age}`, tone: 'ok' }
