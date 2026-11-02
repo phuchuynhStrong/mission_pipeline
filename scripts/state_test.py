@@ -182,5 +182,117 @@ class OwnerTest(StateCase):
         self.assertEqual((r.returncode, r.stdout), (0, "repo m1 live\n"))
 
 
+def inbox(*rows):
+    return json.dumps({"ok": True, "result": {"messages": list(rows)}})
+
+
+def row(seq, to="run:run_a", typ="question"):
+    return {"id": f"msg_{seq}", "sequence": seq, "to_handle": to, "type": typ,
+            "from_handle": "term_x", "payload": None, "body": "b", "subject": "s",
+            "thread_id": None, "read": 1, "created_at": "2026-11-02T11:42:58Z"}
+
+
+class HandledTest(StateCase):
+    def test_handled_start_answer_get(self):
+        self.assertEqual(self.state("handled", "start", "msg_1", "--seq", "1", "--type", "question").returncode, 0)
+        self.assertEqual(self.state("handled", "get", "msg_1").stdout, "started\n")
+        self.assertEqual(self.state("handled", "answer", "msg_1").returncode, 0)
+        self.assertEqual(self.state("handled", "get", "msg_1").stdout, "answered\n")
+        self.assertEqual(self.state("handled", "get", "msg_2").stdout, "none\n")
+
+    def test_handled_start_requires_positive_seq(self):
+        self.assertEqual(self.state("handled", "start", "msg_1", "--type", "q").returncode, 3)
+        self.assertEqual(self.state("handled", "start", "msg_1", "--seq", "0", "--type", "q").returncode, 3)
+        self.assertEqual(self.state("handled", "start", "msg_1", "--seq", "x", "--type", "q").returncode, 3)
+
+    def test_handled_answer_without_start_exit3(self):
+        self.assertEqual(self.state("handled", "answer", "msg_1").returncode, 3)
+
+    def test_handled_open_lists_only_unanswered(self):
+        self.state("handled", "start", "msg_1", "--seq", "1", "--type", "question")
+        self.state("handled", "start", "msg_2", "--seq", "2", "--type", "question")
+        self.state("handled", "answer", "msg_1")
+        r = self.state("handled", "open")
+        self.assertEqual(r.returncode, 0)
+        lines = [json.loads(x) for x in r.stdout.splitlines()]
+        self.assertEqual([x["msg_id"] for x in lines], ["msg_2"])
+
+    def test_handled_corrupt_exit3(self):
+        path = os.path.join(self.root, "handled.jsonl")
+        self.write(path, "{not json\n")
+        r = self.state("handled", "get", "msg_1")
+        self.assertEqual(r.returncode, 3)
+        self.assertIn(path, r.stderr)
+
+
+class ScanTest(StateCase):
+    def scan(self, *args, stdin=""):
+        return subprocess.run(
+            [sys.executable, "-I", STATE, "scan", *args], input=stdin,
+            env={**os.environ, "HOME": self.home}, capture_output=True, text=True,
+        )
+
+    def answer(self, seq):
+        self.state("handled", "start", f"msg_{seq}", "--seq", str(seq), "--type", "question")
+        self.state("handled", "answer", f"msg_{seq}")
+
+    def pending_seqs(self, *rows, limit="100"):
+        r = self.scan("pending", "--run", "run_a", "--limit", limit, stdin=inbox(*rows))
+        return r, [x["sequence"] for x in json.loads(r.stdout)] if r.stdout.strip() else None
+
+    def test_pending_refuses_unseeded(self):
+        r = self.scan("pending", "--run", "run_a", "--limit", "100", stdin=inbox(row(11)))
+        self.assertEqual((r.returncode, r.stdout), (3, ""))
+
+    def test_seed_sets_max_then_refuses_second_seed(self):
+        r = self.scan("seed", "--run", "run_a", stdin=inbox(row(12), row(10), row(99, to="run:other")))
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.scan("floor").stdout, "12\n")
+        r = self.scan("seed", "--run", "run_a", stdin=inbox(row(20)))
+        self.assertEqual(r.returncode, 3)
+        self.assertEqual(self.scan("floor").stdout, "12\n")
+
+    def test_floor_unseeded_exit3(self):
+        self.assertEqual(self.scan("floor").returncode, 3)
+
+    def test_pending_routes_consumed_once(self):
+        self.scan("seed", "--run", "run_a", stdin=inbox(row(10)))
+        r, seqs = self.pending_seqs(row(11), row(10))
+        self.assertEqual((r.returncode, seqs), (0, [11]))
+        self.answer(11)
+        r, seqs = self.pending_seqs(row(11), row(10))
+        self.assertEqual((r.returncode, seqs), (0, []))
+
+    def test_pending_ignores_other_mailboxes(self):
+        self.scan("seed", "--run", "run_a", stdin=inbox(row(10)))
+        r, seqs = self.pending_seqs(row(12, to="run:other"), row(11), row(10))
+        self.assertEqual(seqs, [11])
+
+    def test_pending_oldest_first(self):
+        self.scan("seed", "--run", "run_a", stdin=inbox(row(10)))
+        r, seqs = self.pending_seqs(row(13), row(12), row(10))
+        self.assertEqual(seqs, [12, 13])
+
+    def test_advance_stops_at_first_unanswered(self):
+        self.scan("seed", "--run", "run_a", stdin=inbox(row(10)))
+        self.answer(11)
+        self.state("handled", "start", "msg_12", "--seq", "12", "--type", "question")
+        self.answer(13)
+        r = self.scan("advance", "--run", "run_a", stdin=inbox(row(13), row(12), row(11), row(10)))
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.scan("floor").stdout, "11\n")
+        ids = [json.loads(x)["msg_id"] for x in self.read(os.path.join(self.root, "handled.jsonl")).splitlines()]
+        self.assertNotIn("msg_11", ids)
+        self.assertIn("msg_12", ids)
+        self.assertIn("msg_13", ids)
+
+    def test_window_short_exit5(self):
+        self.scan("seed", "--run", "run_a", stdin=inbox(row(10)))
+        r, seqs = self.pending_seqs(row(21), row(20), limit="2")
+        self.assertEqual(r.returncode, 5)
+        self.assertIn("window short", r.stderr)
+        self.assertEqual(seqs, [20, 21])
+
+
 if __name__ == "__main__":
     unittest.main()
