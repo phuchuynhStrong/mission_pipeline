@@ -25,6 +25,55 @@ Orca workers: read > spec > plan > tree > build > review.
    `spec.md` + `plan.html` are committed to `docs/preparation/<id>-<slug>/` on the current
    branch. No worktree, no build, no ticket status change.
 
+## Persistent coordinator
+
+One long-lived coordinator session runs every mission on this Mac, in its own Orca terminal
+and workspace, apart from your daily repo. Other tools and Claude sessions talk to it with
+`orca orchestration send --to run:<shared> --type question`. `<root>` below is the installed
+plugin folder; `<shared>` comes from `python3 -I <root>/scripts/state.py run`.
+
+1. Create the workspace folder (default `~/orca/pipeline-coordinator`). Make it a git repo,
+   so `orca repo add` accepts it:
+
+   ```
+   mkdir -p ~/orca/pipeline-coordinator
+   git -C ~/orca/pipeline-coordinator init
+   orca repo add --path ~/orca/pipeline-coordinator
+   ```
+
+2. Write its settings (accept-edits mode, the narrow allowlist, the `/compact` notes hook):
+
+   ```
+   mkdir -p ~/orca/pipeline-coordinator/.claude
+   python3 -I <root>/scripts/coordinator_setup.py settings --plugin-root <root> > ~/orca/pipeline-coordinator/.claude/settings.json
+   ```
+
+3. Cutover rule: start the dedicated coordinator only when no open mission has a live
+   worker. First launch by hand, and answer the one-time folder trust dialog:
+
+   ```
+   orca agent launch --agent claude --surface terminal --worktree path:$HOME/orca/pipeline-coordinator --prompt "/pipeline" --json
+   ```
+
+   Its first Binding takes over the shared Run, seeds the inbox scan, and re-arms the PR
+   watchers. Then close the old coordinator session in your daily repo.
+
+4. Install the watchdog. It runs every minute and at login, starts a new coordinator when
+   the saved terminal is gone, and never types into any terminal:
+
+   ```
+   python3 -I <root>/scripts/watchdog.py plist --workspace ~/orca/pipeline-coordinator > ~/Library/LaunchAgents/com.mission-pipeline.coordinator-watchdog.plist
+   launchctl load ~/Library/LaunchAgents/com.mission-pipeline.coordinator-watchdog.plist
+   ```
+
+5. When the coordinator is live but not waiting (fenced, a permission prompt, Binding
+   failed), the watchdog writes a notice to the board and does not launch. After two failed
+   launches in a row it pauses. Fix the cause, then:
+
+   ```
+   python3 -I <root>/scripts/watchdog.py resume
+   ```
+
 ## Layout
 
 ```
