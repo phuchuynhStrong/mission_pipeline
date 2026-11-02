@@ -18,7 +18,8 @@ ORCA = [
     "orca orchestration worker-list",
     "orca linear issue", "orca linear status set",
     "orca worktree create", "orca worktree rm",
-    "orca terminal close", "orca terminal rename",
+    "orca orchestration send",
+    "orca terminal close", "orca terminal rename", "orca terminal list",
     "orca repo list",
 ]
 GH = ["gh pr create", "gh pr list", "gh pr view"]

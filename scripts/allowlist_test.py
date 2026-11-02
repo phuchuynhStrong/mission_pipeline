@@ -93,6 +93,16 @@ class AllowlistTest(unittest.TestCase):
         bad = [f"{os.path.basename(p)}: {l}" for p, l in lines if not allowed(l, s)]
         self.assertEqual(bad, [])
 
+    def test_every_fenced_line_is_checked(self):
+        # a fenced line outside CHECKED would skip test_every_skill_command_allowed
+        bad = [f"{os.path.basename(p)}: {l}" for p, l in code_lines() if not l.startswith(CHECKED)]
+        self.assertEqual(bad, [])
+
+    def test_terminal_list_and_send_allowed(self):
+        s = coordinator_setup.settings(ROOT)
+        self.assertTrue(allowed("orca terminal list --limit 1000 --json", s))
+        self.assertTrue(allowed("orca orchestration send --to run:R --type question --subject s --body b", s))
+
     def test_no_raw_git_or_rm_in_skill(self):
         bad = [f"{os.path.basename(p)}: {l}" for p, l in code_lines() if l.startswith(RAW)]
         self.assertEqual(bad, [])
