@@ -333,5 +333,89 @@ class ScanTest(StateCase):
         self.assertEqual(self.read(os.path.join(self.root, "handled.jsonl")), before)
 
 
+class NoticeTest(StateCase):
+    def test_notice_add_list_clear(self):
+        r = self.state("notice", "add", "--kind", "warn", "--line", "hello", "--mission", "repo/m1")
+        self.assertEqual(r.returncode, 0)
+        nid = r.stdout.strip()
+        self.assertRegex(nid, r"^n_\d+$")
+        rows = [json.loads(x) for x in self.state("notice", "list").stdout.splitlines()]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["id"], rows[0]["kind"], rows[0]["mission"], rows[0]["line"], rows[0]["cleared"]),
+                         (nid, "warn", "repo/m1", "hello", False))
+        self.assertIn("at", rows[0])
+        self.assertEqual(self.state("notice", "clear", nid).returncode, 0)
+        self.assertEqual(self.state("notice", "list").stdout, "")
+        last = json.loads(self.read(os.path.join(self.root, "notices.jsonl")).splitlines()[-1])
+        self.assertEqual((last["id"], last["cleared"]), (nid, True))
+
+    def test_notice_list_all_shows_cleared(self):
+        a = self.state("notice", "add", "--kind", "k", "--line", "one").stdout.strip()
+        b = self.state("notice", "add", "--kind", "k", "--line", "two").stdout.strip()
+        self.assertNotEqual(a, b)
+        self.state("notice", "clear", a)
+        rows = [json.loads(x) for x in self.state("notice", "list", "--all").stdout.splitlines()]
+        self.assertEqual({r["id"]: r["cleared"] for r in rows}, {a: True, b: False})
+        self.state("notice", "clear", "--all")
+        self.assertEqual(self.state("notice", "list").stdout, "")
+
+    def test_notice_corrupt_exit3(self):
+        self.write(os.path.join(self.root, "notices.jsonl"), "{not json\n")
+        self.assertEqual(self.state("notice", "list").returncode, 3)
+
+
+class NoteTest(StateCase):
+    def test_note_show_empty_exit0(self):
+        r = self.state("note", "show")
+        self.assertEqual((r.returncode, r.stdout), (0, ""))
+
+    def test_note_add_then_show(self):
+        self.assertEqual(self.state("note", "add", "first thing").returncode, 0)
+        self.state("note", "add", "second")
+        lines = self.state("note", "show").stdout.splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].startswith("- ") and lines[0].endswith(" first thing"))
+        self.assertTrue(lines[1].endswith(" second"))
+
+
+class HeartbeatTest(StateCase):
+    def test_heartbeat_fields(self):
+        self.assertEqual(self.state("heartbeat", "--terminal", "term_1").returncode, 0)
+        d = json.loads(self.read(os.path.join(self.root, "heartbeat")))
+        self.assertIsInstance(d["at"], int)
+        self.assertGreater(d["at"], 10 ** 12)
+        self.assertEqual(d["terminal"], "term_1")
+        self.assertIn("iso", d)
+
+
+class FileTest(StateCase):
+    def test_file_write_and_dir(self):
+        r = subprocess.run([sys.executable, "-I", STATE, "file", "write", "repo", "m1", "readings/ui.md"],
+                           input="body\n", env={**os.environ, "HOME": self.home}, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0)
+        p = os.path.join(self.root, "files", "repo", "m1", "readings", "ui.md")
+        self.assertEqual(r.stdout.strip(), p)
+        self.assertEqual(self.read(p), "body\n")
+        r = self.state("file", "dir", "repo", "m2")
+        d = os.path.join(self.root, "files", "repo", "m2")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, d))
+        self.assertTrue(os.path.isdir(d))
+
+    def test_file_write_refuses_dotdot(self):
+        for name in ("../x.md", "a/../../x.md", "/etc/x", "a/b/c.md"):
+            r = self.state("file", "write", "repo", "m1", name)
+            self.assertEqual(r.returncode, 3, name)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "files", "repo", "x.md")))
+
+    def test_list_ignores_files_folder(self):
+        self.mission("repo", "m1", dispatches=["ctx_a"], settled=[])
+        self.write(os.path.join(self.root, "files", "repo", "m1", "pr.json"), json.dumps({"number": 1}))
+        self.write(os.path.join(self.root, "files", "x.json"), "{not json")
+        r = self.state("list")
+        self.assertEqual((r.returncode, r.stdout.splitlines()), (0, ["repo/m1  stage=read  "]))
+        r = self.state("owner", "ctx_a")
+        self.assertEqual((r.returncode, r.stdout), (0, "repo m1 live\n"))
+
+
 if __name__ == "__main__":
     unittest.main()

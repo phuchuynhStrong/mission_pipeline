@@ -13,6 +13,10 @@
   state.py handled start <msg> --seq N --type T [--from F] [--kind outside|mission] [--summary S]
   state.py handled answer <msg> [--summary S] | get <msg> | open
   state.py scan seed --run R | floor | pending --run R --limit N | advance --run R --limit N   # stdin: inbox --json
+  state.py notice add --kind K --line L [--mission M] | list [--all] | clear <id> | clear --all
+  state.py note add <text> | show                  # coordinator-notes.md, read back after /compact
+  state.py heartbeat --terminal <handle>           # heartbeat: {"at": epoch ms, "iso", "terminal"}
+  state.py file write <slug> <id> <name> | dir <slug> <id>   # ROOT/files/<slug>/<id>/; write reads stdin
 
 `run` exits 3 when coordinator.json is corrupt or has no run_id. `owner` exits 3 when
 no open mission lists the Dispatch, 4 when two do; any other non-zero exit is a failure.
@@ -31,6 +35,7 @@ STAGES = ["read", "spec", "plan", "worktree", "build", "review", "pr"]
 TERMINAL = ["done", "aborted"]  # stage values the board treats as closed; "ready" (PR open, waiting merge) is still open
 COORD = os.path.join(ROOT, "coordinator.json")  # the coordinator's saved Run, shared by every mission
 RAW_LISTS = ("dispatches", "settled")  # Orca ids: append as given, never parse_value
+FILES = "files"  # ROOT/files/<slug>/<id>/: per-mission files, not missions
 
 
 def now():
@@ -74,7 +79,7 @@ def open_missions():
         return
     for s in sorted(os.listdir(ROOT)):
         d = os.path.join(ROOT, s)
-        if not os.path.isdir(d):
+        if s == FILES or not os.path.isdir(d):
             continue
         for name in sorted(os.listdir(d)):
             if name.endswith(".json"):
@@ -398,6 +403,115 @@ def cmd_scan(a):
         print(floor)
 
 
+NOTICES = os.path.join(ROOT, "notices.jsonl")  # append-only; a clear line folds over its notice
+NOTES = os.path.join(ROOT, "coordinator-notes.md")
+HEARTBEAT = os.path.join(ROOT, "heartbeat")
+
+
+def epoch_ms():
+    return int(datetime.datetime.now().timestamp() * 1000)
+
+
+def read_notices():
+    """id -> notice with clears folded in, in add order. Exit 3 on any line that does not parse."""
+    out = {}
+    if not os.path.exists(NOTICES):
+        return out
+    try:
+        with open(NOTICES) as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                e = json.loads(line)
+                if not isinstance(e, dict):
+                    raise ValueError(line)
+                if "kind" in e:
+                    out[e.get("id")] = e
+                elif e.get("cleared") and e.get("id") in out:
+                    out[e["id"]] = {**out[e["id"]], "cleared": True}
+    except (ValueError, OSError):
+        print(f"bad notices file: {NOTICES}", file=sys.stderr)
+        sys.exit(3)
+    return out
+
+
+def append_notice(entry):
+    os.makedirs(ROOT, exist_ok=True)
+    with open(NOTICES, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
+def notice_add(kind: str, line: str, mission: str = "") -> str:
+    known = read_notices()  # also refuses a corrupt file
+    ms = epoch_ms()
+    while f"n_{ms}" in known:
+        ms += 1
+    nid = f"n_{ms}"
+    append_notice({"id": nid, "at": now(), "kind": kind, "mission": mission, "line": line, "cleared": False})
+    return nid
+
+
+def cmd_notice(a):
+    if a.action == "add":
+        print(notice_add(a.kind, a.line, a.mission or ""))
+    elif a.action == "list":
+        for e in read_notices().values():
+            if a.all or not e.get("cleared"):
+                print(json.dumps(e))
+    else:
+        known = read_notices()
+        if a.all:
+            ids = [i for i, e in known.items() if not e.get("cleared")]
+        elif a.id:
+            if a.id not in known:
+                print(f"refused: no notice {a.id}", file=sys.stderr)
+                sys.exit(3)
+            ids = [a.id]
+        else:
+            print("refused: give <id> or --all", file=sys.stderr)
+            sys.exit(3)
+        for i in ids:
+            append_notice({"id": i, "cleared": True, "at": now()})
+        print(len(ids))
+
+
+def cmd_note(a):
+    if a.action == "add":
+        os.makedirs(ROOT, exist_ok=True)
+        with open(NOTES, "a") as f:
+            f.write(f"- {now()} {a.text}\n")
+    elif os.path.exists(NOTES):
+        with open(NOTES) as f:
+            sys.stdout.write(f.read())
+
+
+def write_heartbeat(terminal: str) -> None:
+    write_json(HEARTBEAT, {"at": epoch_ms(), "iso": now(), "terminal": terminal})
+
+
+def cmd_heartbeat(a):
+    write_heartbeat(a.terminal)
+
+
+def safe_part(p):
+    return bool(p) and p not in (".", "..") and "/" not in p and "\\" not in p
+
+
+def cmd_file(a):
+    parts = a.name.split("/") if a.action == "write" else []
+    if not (safe_part(a.slug) and safe_part(a.id)) or len(parts) > 2 or not all(safe_part(x) for x in parts):
+        print("refused: bad slug, id or name", file=sys.stderr)
+        sys.exit(3)
+    d = os.path.join(ROOT, FILES, a.slug, a.id)
+    if a.action == "dir":
+        os.makedirs(d, exist_ok=True)
+        print(d)
+        return
+    p = os.path.join(d, *parts)
+    write_text(p, sys.stdin.read())
+    print(p)
+
+
 def cmd_owner(a):
     hits = [
         f'{s} {m["id"]} {"settled" if a.dispatch in m.get("settled", []) else "live"}'
@@ -414,7 +528,7 @@ def cmd_owner(a):
 
 def cmd_list(a):
     slugs = [a.slug] if a.slug else sorted(
-        s for s in os.listdir(ROOT) if os.path.isdir(os.path.join(ROOT, s))
+        s for s in os.listdir(ROOT) if s != FILES and os.path.isdir(os.path.join(ROOT, s))
     ) if os.path.isdir(ROOT) else []
     for s in slugs:
         d = os.path.join(ROOT, s)
@@ -456,6 +570,19 @@ def main():
     sp = ss.add_parser("pending"); sp.add_argument("--run", required=True); sp.add_argument("--limit", type=int, required=True)
     sa = ss.add_parser("advance"); sa.add_argument("--run", required=True); sa.add_argument("--limit", type=int, required=True)
     sc.set_defaults(fn=cmd_scan)
+    nt = sub.add_parser("notice"); ns = nt.add_subparsers(dest="action", required=True)
+    na = ns.add_parser("add"); na.add_argument("--kind", required=True); na.add_argument("--line", required=True); na.add_argument("--mission")
+    ns.add_parser("list").add_argument("--all", action="store_true")
+    nc = ns.add_parser("clear"); nc.add_argument("id", nargs="?"); nc.add_argument("--all", action="store_true")
+    nt.set_defaults(fn=cmd_notice)
+    no = sub.add_parser("note"); nos = no.add_subparsers(dest="action", required=True)
+    nos.add_parser("add").add_argument("text"); nos.add_parser("show")
+    no.set_defaults(fn=cmd_note)
+    hb = sub.add_parser("heartbeat"); hb.add_argument("--terminal", required=True); hb.set_defaults(fn=cmd_heartbeat)
+    fl = sub.add_parser("file"); fs = fl.add_subparsers(dest="action", required=True)
+    fw = fs.add_parser("write"); fw.add_argument("slug"); fw.add_argument("id"); fw.add_argument("name")
+    fd = fs.add_parser("dir"); fd.add_argument("slug"); fd.add_argument("id")
+    fl.set_defaults(fn=cmd_file)
     a = p.parse_args()
     a.fn(a)
 
