@@ -12,7 +12,7 @@
   state.py owner <dispatch_id>             # -> "<repo-slug> <id> live|settled"
   state.py handled start <msg> --seq N --type T [--from F] [--kind outside|mission] [--summary S]
   state.py handled answer <msg> [--summary S] | get <msg> | open
-  state.py scan seed --run R | floor | pending --run R --limit N | advance --run R   # stdin: inbox --json
+  state.py scan seed --run R | floor | pending --run R --limit N | advance --run R --limit N   # stdin: inbox --json
 
 `run` exits 3 when coordinator.json is corrupt or has no run_id. `owner` exits 3 when
 no open mission lists the Dispatch, 4 when two do; any other non-zero exit is a failure.
@@ -308,7 +308,9 @@ def cmd_handled(a):
         if seq <= 0:
             print("refused: --seq must be an integer > 0", file=sys.stderr)
             sys.exit(3)
-        read_handled()  # refuse to append to a corrupt file
+        if handled_status(a.msg) == "answered":  # answered is sticky; also refuses a corrupt file
+            print(f"refused: {a.msg} already answered", file=sys.stderr)
+            sys.exit(3)
         append_handled({"msg_id": a.msg, "seq": seq, "type": a.type, "from": a.from_ or "",
                         "kind": a.kind or "", "status": "started", "at": now(), "summary": a.summary or ""})
         print("started")
@@ -355,9 +357,18 @@ def read_inbox():
         sys.exit(3)
 
 
+def read_scan_for(run_id):
+    """scan.json for this Run; exit 3 when it was seeded for another Run."""
+    data = read_scan()
+    if data.get("run_id") != run_id:
+        print(f"refused: {SCAN} is for run {data.get('run_id')}, not {run_id}", file=sys.stderr)
+        sys.exit(3)
+    return data
+
+
 def cmd_scan(a):
     if a.action == "seed":
-        if os.path.exists(SCAN):
+        if os.path.exists(SCAN) and read_scan().get("run_id") == a.run:
             print(f"refused: already seeded: {SCAN}", file=sys.stderr)
             sys.exit(3)
         seqs = [r["sequence"] for r in _matching(read_inbox(), a.run)]
@@ -367,15 +378,19 @@ def cmd_scan(a):
     elif a.action == "floor":
         print(read_scan()["floor"])
     elif a.action == "pending":
-        floor = read_scan()["floor"]
+        floor = read_scan_for(a.run)["floor"]
         rows = read_inbox()
         print(json.dumps(pending_rows(rows, a.run, floor)))
         if window_short(rows, floor, a.limit):
             print(f"window short: {len(rows)} rows, all above floor {floor}", file=sys.stderr)
             sys.exit(5)
     else:
-        data = read_scan()
-        floor = next_floor(read_inbox(), a.run, data["floor"])
+        data = read_scan_for(a.run)
+        rows = read_inbox()
+        if window_short(rows, data["floor"], a.limit):
+            print(f"window short: {len(rows)} rows, all above floor {data['floor']}; floor kept", file=sys.stderr)
+            sys.exit(5)
+        floor = next_floor(rows, a.run, data["floor"])
         keep = [e for e in read_handled() if not (isinstance(e.get("seq"), int) and e["seq"] <= floor)]
         write_json(SCAN, {**data, "run_id": a.run, "floor": floor, "updated": now()})
         if os.path.exists(HANDLED):
@@ -439,7 +454,7 @@ def main():
     sc = sub.add_parser("scan"); ss = sc.add_subparsers(dest="action", required=True)
     ss.add_parser("seed").add_argument("--run", required=True); ss.add_parser("floor")
     sp = ss.add_parser("pending"); sp.add_argument("--run", required=True); sp.add_argument("--limit", type=int, required=True)
-    ss.add_parser("advance").add_argument("--run", required=True)
+    sa = ss.add_parser("advance"); sa.add_argument("--run", required=True); sa.add_argument("--limit", type=int, required=True)
     sc.set_defaults(fn=cmd_scan)
     a = p.parse_args()
     a.fn(a)

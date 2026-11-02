@@ -278,7 +278,7 @@ class ScanTest(StateCase):
         self.answer(11)
         self.state("handled", "start", "msg_12", "--seq", "12", "--type", "question")
         self.answer(13)
-        r = self.scan("advance", "--run", "run_a", stdin=inbox(row(13), row(12), row(11), row(10)))
+        r = self.scan("advance", "--run", "run_a", "--limit", "100", stdin=inbox(row(13), row(12), row(11), row(10)))
         self.assertEqual(r.returncode, 0)
         self.assertEqual(self.scan("floor").stdout, "11\n")
         ids = [json.loads(x)["msg_id"] for x in self.read(os.path.join(self.root, "handled.jsonl")).splitlines()]
@@ -292,6 +292,45 @@ class ScanTest(StateCase):
         self.assertEqual(r.returncode, 5)
         self.assertIn("window short", r.stderr)
         self.assertEqual(seqs, [20, 21])
+
+    def test_pending_refuses_other_run(self):
+        self.scan("seed", "--run", "run_a", stdin=inbox(row(10)))
+        r = self.scan("pending", "--run", "run_b", "--limit", "100", stdin=inbox(row(11, to="run:run_b")))
+        self.assertEqual((r.returncode, r.stdout), (3, ""))
+        self.assertTrue(r.stderr)
+
+    def test_advance_refuses_other_run(self):
+        self.scan("seed", "--run", "run_a", stdin=inbox(row(10)))
+        r = self.scan("advance", "--run", "run_b", "--limit", "100", stdin=inbox(row(10)))
+        self.assertEqual(r.returncode, 3)
+        self.assertTrue(r.stderr)
+        self.assertEqual(json.loads(self.read(os.path.join(self.root, "scan.json")))["run_id"], "run_a")
+
+    def test_seed_new_run_overwrites(self):
+        self.scan("seed", "--run", "run_a", stdin=inbox(row(10)))
+        r = self.scan("seed", "--run", "run_b", stdin=inbox(row(30, to="run:run_b"), row(10)))
+        self.assertEqual(r.returncode, 0)
+        d = json.loads(self.read(os.path.join(self.root, "scan.json")))
+        self.assertEqual((d["run_id"], d["floor"]), ("run_b", 30))
+
+    def test_start_after_answered_refused(self):
+        self.answer(11)
+        before = self.read(os.path.join(self.root, "handled.jsonl"))
+        r = self.state("handled", "start", "msg_11", "--seq", "11", "--type", "question")
+        self.assertEqual(r.returncode, 3)
+        self.assertEqual(self.read(os.path.join(self.root, "handled.jsonl")), before)
+        self.assertEqual(self.state("handled", "get", "msg_11").stdout, "answered\n")
+
+    def test_advance_window_short_keeps_floor(self):
+        self.scan("seed", "--run", "run_a", stdin=inbox(row(10)))
+        self.answer(20)
+        self.answer(21)
+        before = self.read(os.path.join(self.root, "handled.jsonl"))
+        r = self.scan("advance", "--run", "run_a", "--limit", "2", stdin=inbox(row(21), row(20)))
+        self.assertEqual(r.returncode, 5)
+        self.assertIn("window short", r.stderr)
+        self.assertEqual(self.scan("floor").stdout, "10\n")
+        self.assertEqual(self.read(os.path.join(self.root, "handled.jsonl")), before)
 
 
 if __name__ == "__main__":
