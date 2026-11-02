@@ -13,14 +13,14 @@ orca orchestration run-show --id <saved_id> --json      # error.code run_not_fou
 orca orchestration run-use --id <saved_id> --json       # found: bind; any error: tell the user, stop
 orca orchestration run-create --objective "pipeline coordinator" --json     # only: no saved id or run_not_found
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py run --set <run_id>        # save it for restarts
-python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/coord.py seed --run <shared>       # first Binding of the dedicated coordinator only (cutover)
+python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/coord.py seed --run <shared>       # every Binding; exit 3 "already seeded" = normal; other failure: notice
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py note show                 # pending decisions, recent answers
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py handled open              # started, not answered -> Recovery
 # every worker-start below also carries --run <shared>; record result.dispatchId with dispatches+=
 
 # intake: the mission's repo must be registered; owner/repo from its origin
 orca repo list --json
-python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/mission_ops.py owner-repo <repo>   # -> owner/repo; exit 3 = no GitHub origin
+python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/mission_ops.py owner-repo <repo>   # <repo> = absolute path from repo list -> owner/repo; exit 3 = no GitHub origin
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py file write <slug> <id> mission.md   # text on stdin; never the Write tool
 
 # readers, senior, planner: the mission's repo, never `current` (the coordinator's own folder)
@@ -65,8 +65,8 @@ pgrep -f "coord.py wait --run <shared>"                                    # exi
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/coord.py wait --run <shared> --out <scratchpad>/pipeline/inbox.json   # heartbeat, then check --wait ... --full --json; non-zero: nothing written
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/coord.py scan --run <shared>      # after every wake: inbox --limit 100 --full --json -> unanswered rows above the floor; exit 5 = window short
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/coord.py advance --run <shared>   # after routing them: move the floor up
-python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py handled get <message_id>   # answered | started | (empty)
-python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py handled start <message_id> --seq <sequence> --type <type> --from <from_handle> --kind outside --summary "<line>"   # before any action; --kind mission for a Dispatch message
+python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py handled get <message_id> --seq <sequence>   # answered (also at/below the floor) -> skip | started -> Recovery | none
+python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py handled start <message_id> --seq <sequence> --type <type> --from <from_handle> --kind outside --summary "<line>"   # before any action; --kind mission for a Dispatch message; exit 3 = refused: no action, no notice
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py handled answer <message_id> --summary "<line>"   # after the action and the reply
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py notice add --kind <kind> --mission <id> --line "<line>"   # every "tell the user"
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py notice list              # open notices, for every status reply

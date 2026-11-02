@@ -11,7 +11,7 @@
   state.py run [--set <run_id>]            # the coordinator's saved Run (coordinator.json)
   state.py owner <dispatch_id>             # -> "<repo-slug> <id> live|settled"
   state.py handled start <msg> --seq N --type T [--from F] [--kind outside|mission] [--summary S]
-  state.py handled answer <msg> [--summary S] | get <msg> | open
+  state.py handled answer <msg> [--summary S] | get <msg> [--seq N] | open   # seq at or below the scan floor: start refused, get answered
   state.py scan seed --run R | floor | pending --run R --limit N | advance --run R --limit N   # stdin: inbox --json
   state.py notice add --kind K --line L [--mission M] | list [--all] | clear <id> | clear --all
   state.py note add <text> | show                  # coordinator-notes.md, read back after /compact
@@ -313,6 +313,10 @@ def cmd_handled(a):
         if seq <= 0:
             print("refused: --seq must be an integer > 0", file=sys.stderr)
             sys.exit(3)
+        floor = scan_floor()
+        if floor is not None and seq <= floor:  # at or below the floor: already handled, maybe pruned
+            print(f"refused: seq {seq} below floor {floor}", file=sys.stderr)
+            sys.exit(3)
         if handled_status(a.msg) == "answered":  # answered is sticky; also refuses a corrupt file
             print(f"refused: {a.msg} already answered", file=sys.stderr)
             sys.exit(3)
@@ -327,11 +331,20 @@ def cmd_handled(a):
         append_handled({**start, "status": "answered", "at": now(), "summary": a.summary or start.get("summary", "")})
         print("answered")
     elif a.action == "get":
-        print(handled_status(a.msg))
+        floor = scan_floor() if a.seq is not None else None
+        if floor is not None and int(a.seq) <= floor:
+            print("answered")
+        else:
+            print(handled_status(a.msg))
     else:
         for e in handled_map().values():
             if e.get("status") == "started":
                 print(json.dumps(e))
+
+
+def scan_floor():
+    """The scan floor, or None when unseeded. Exit 3 on a corrupt scan file."""
+    return read_scan()["floor"] if os.path.exists(SCAN) else None
 
 
 def read_scan():
@@ -563,7 +576,7 @@ def main():
     hst = hs.add_parser("start"); hst.add_argument("msg"); hst.add_argument("--seq"); hst.add_argument("--type", required=True)
     hst.add_argument("--from", dest="from_"); hst.add_argument("--kind", choices=["outside", "mission"]); hst.add_argument("--summary")
     han = hs.add_parser("answer"); han.add_argument("msg"); han.add_argument("--summary")
-    hs.add_parser("get").add_argument("msg"); hs.add_parser("open")
+    hg = hs.add_parser("get"); hg.add_argument("msg"); hg.add_argument("--seq", type=int); hs.add_parser("open")
     h.set_defaults(fn=cmd_handled)
     sc = sub.add_parser("scan"); ss = sc.add_subparsers(dest="action", required=True)
     ss.add_parser("seed").add_argument("--run", required=True); ss.add_parser("floor")

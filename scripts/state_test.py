@@ -321,6 +321,20 @@ class ScanTest(StateCase):
         self.assertEqual(self.read(os.path.join(self.root, "handled.jsonl")), before)
         self.assertEqual(self.state("handled", "get", "msg_11").stdout, "answered\n")
 
+    def test_start_below_floor_refused(self):
+        self.scan("seed", "--run", "run_a", stdin=inbox(row(10)))
+        r = self.state("handled", "start", "msg_10", "--seq", "10", "--type", "question")
+        self.assertEqual(r.returncode, 3)
+        self.assertIn("below floor", r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.root, "handled.jsonl")))
+        self.assertEqual(self.state("handled", "start", "msg_11", "--seq", "11", "--type", "question").returncode, 0)
+
+    def test_get_below_floor_answered(self):
+        self.scan("seed", "--run", "run_a", stdin=inbox(row(10)))
+        self.assertEqual(self.state("handled", "get", "msg_9", "--seq", "9").stdout, "answered\n")
+        self.assertEqual(self.state("handled", "get", "msg_11", "--seq", "11").stdout, "none\n")
+        self.assertEqual(self.state("handled", "get", "msg_9").stdout, "none\n")
+
     def test_advance_window_short_keeps_floor(self):
         self.scan("seed", "--run", "run_a", stdin=inbox(row(10)))
         self.answer(20)
