@@ -1,6 +1,6 @@
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Mission, StageStatus } from '../types'
+import type { Mission, Notice, StageStatus } from '../types'
 
 export const PANE = 'pipeline-board'
 let cache: Mission[] = []
@@ -215,6 +215,49 @@ export function healthLineOf(h: LspHealth | undefined, problem: string, now: num
   }
 }
 
+/** Coordinator heartbeat older than this reads as stopped. */
+const COORDINATOR_STALE_MS = 20 * 60 * 1000
+const NOTICES_SHOWN = 3
+
+/** Pure: the open notices in `notices.jsonl`; a clear line removes its id, bad lines are skipped; newest first. */
+export function noticesOf(text: string): Notice[] {
+  const open = new Map<string, Notice>()
+  for (const raw of text.split('\n')) {
+    if (!raw.trim()) continue
+    try {
+      const n = JSON.parse(raw) as Record<string, unknown> | null
+      if (!n || typeof n !== 'object' || typeof n.id !== 'string') continue
+      if (n.cleared === true) {
+        open.delete(n.id)
+        continue
+      }
+      if (typeof n.at !== 'string' || typeof n.kind !== 'string' || typeof n.line !== 'string') continue
+      const notice: Notice = { id: n.id, at: n.at, kind: n.kind, line: n.line }
+      if (typeof n.mission === 'string') notice.mission = n.mission
+      open.delete(n.id)
+      open.set(n.id, notice)
+    } catch {
+      // a bad or half-written line; skip it
+    }
+  }
+  return [...open.values()].reverse().sort((a, b) => b.at.localeCompare(a.at))
+}
+
+/** Pure: the coordinator health line from its `heartbeat` file; stale after 20 min. */
+export function coordinatorLineOf(heartbeat: string | undefined, now: number): HealthLine {
+  let at: unknown
+  try {
+    at = heartbeat === undefined ? undefined : (JSON.parse(heartbeat) as { at?: unknown } | null)?.at
+  } catch {
+    at = undefined
+  }
+  if (typeof at !== 'number' || !Number.isFinite(at)) return { text: 'Coordinator · not started', tone: 'idle' }
+  const age = ageOf(new Date(at).toISOString(), now)
+  return now - at < COORDINATOR_STALE_MS
+    ? { text: `Coordinator ✓ waiting · ${age}`, tone: 'ok' }
+    : { text: `Coordinator ✗ no wait for ${age}`, tone: 'err' }
+}
+
 /** Pure: the cached health when the cache file is younger than `maxAgeMs`, else undefined. */
 export function freshHealth(text: string, now: number, maxAgeMs = HEALTH_MS): LspHealth | undefined {
   try {
@@ -316,6 +359,17 @@ export function linkPrs(text: string, links: Map<number, string>): string {
 
 const POLL_MS = 3000
 let lastSeen = ''
+let notices: Notice[] = []
+let heartbeat: string | undefined
+
+/** A root file's text, or undefined when it is missing or cannot be read. */
+async function readRootFile($: EngineInterface, path: string): Promise<string | undefined> {
+  try {
+    return (await $.fs.exists(path)) ? await $.fs.read(path) : undefined
+  } catch {
+    return undefined
+  }
+}
 
 async function rootOf($: EngineInterface, option: string): Promise<string | undefined> {
   if (option.startsWith('/')) return option
@@ -341,10 +395,14 @@ async function load($: EngineInterface, option: string) {
     }
   }
   found.sort((a, b) => (b.updated ?? '').localeCompare(a.updated ?? ''))
-  const key = JSON.stringify(found)
+  const foundNotices = noticesOf((await readRootFile($, `${root}/notices.jsonl`)) ?? '')
+  const foundBeat = await readRootFile($, `${root}/heartbeat`)
+  const key = JSON.stringify([found, foundNotices, foundBeat ?? null])
   if (key === lastSeen) return
   lastSeen = key
   cache = found
+  notices = foundNotices
+  heartbeat = foundBeat
   $.ui.invalidate('ui.render')
 }
 
@@ -386,13 +444,31 @@ export const register: Register = (on, options) => {
         {line.text}
       </Text>
     ) : null
+    const coord = coordinatorLineOf(heartbeat, Date.now())
+    const coordText = (
+      <Text key="coordinator" color={HEALTH_COLOR[coord.tone]} dimColor={coord.tone === 'idle'} wrap="truncate-end">
+        {coord.text}
+      </Text>
+    )
+    const noticeText = notices.length ? (
+      <Box flexDirection="column" key="notices">
+        {notices.slice(0, NOTICES_SHOWN).map(n => (
+          <Text key={`notice:${n.id}`} color="red" wrap="truncate-end">
+            {`! ${n.line}`}
+          </Text>
+        ))}
+        {notices.length > NOTICES_SHOWN && <Text dimColor>{`+${notices.length - NOTICES_SHOWN} more`}</Text>}
+      </Box>
+    ) : null
 
     if (rows.length === 0) {
       return (
         <Box flexDirection="column">
+          {noticeText}
           <Text>No open missions.</Text>
           <Text dimColor>/pipeline &lt;ticket&gt; starts one.</Text>
-          {healthText && <Text> </Text>}
+          <Text> </Text>
+          {coordText}
           {healthText}
         </Box>
       )
@@ -402,6 +478,7 @@ export const register: Register = (on, options) => {
     const keys = rows.filter(r => r.hotkey).length
     return (
       <Box flexDirection="column">
+        {noticeText}
         {rows.map((row, i) => {
           const running = row.tone === 'running'
           const tone = row.marker.tone
@@ -440,6 +517,7 @@ export const register: Register = (on, options) => {
           )
         })}
         <Text> </Text>
+        {coordText}
         {healthText}
         <Box flexDirection="row" gap={2}>
           {LEGEND.map(([tone, word]) => (

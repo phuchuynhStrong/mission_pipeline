@@ -20,3 +20,6 @@ export type Mission = {
   stages: Record<string, MissionStage>
   attention?: MissionAttention | null
 }
+
+/** One coordinator notice from `notices.jsonl`, after clears are folded in. */
+export type Notice = { id: string; at: string; kind: string; mission?: string; line: string }

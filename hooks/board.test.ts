@@ -5,12 +5,14 @@ import {
   PANE,
   ageOf,
   badgeOf,
+  coordinatorLineOf,
   freshHealth,
   healthArgv,
   healthLineOf,
   isClosed,
   linkPrs,
   markerOf,
+  noticesOf,
   parseHealth,
   prLinksOf,
   rowsOf,
@@ -41,19 +43,26 @@ const sample: Mission = {
   },
 }
 
-/** A fake ~/.claude/pipeline holding the given missions, one repo folder each. */
-function fakeFs(on: On, list: Mission[], opens?: Array<Record<string, unknown>>) {
+/** A fake ~/.claude/pipeline holding the given missions, one repo folder each, and `files` at the root. */
+function fakeFs(on: On, list: Mission[], opens?: Array<Record<string, unknown>>, files: Record<string, string> = {}) {
   const root = '/home/t/.claude/pipeline'
+  const rootFile = (path: string) => (path.startsWith(`${root}/`) ? files[path.slice(root.length + 1)] : undefined)
   on('env.get', async (_, e) => ({ value: e.name === 'HOME' ? '/home/t' : undefined }))
-  on('fs.exists', async (_, e) => ({ value: e.path === root }))
+  on('fs.exists', async (_, e) => ({ value: e.path === root || rootFile(e.path) !== undefined }))
   on('fs.list', async (_, e) => {
-    if (e.path === root) return { value: list.map(m => ({ name: m.repo_slug, kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false })) }
+    if (e.path === root) {
+      const dirs = list.map(m => ({ name: m.repo_slug, kind: 'dir' as const, size: 0, mtimeMs: 0, isLink: false }))
+      const plain = Object.keys(files).map(name => ({ name, kind: 'file' as const, size: 1, mtimeMs: 0, isLink: false }))
+      return { value: [...dirs, ...plain] }
+    }
     const value = list
       .filter(m => e.path === `${root}/${m.repo_slug}`)
       .map(m => ({ name: `${m.id}.json`, kind: 'file' as const, size: 1, mtimeMs: 0, isLink: false }))
     return { value }
   })
   on('fs.read', async (_, e) => {
+    const text = rootFile(e.path)
+    if (text !== undefined) return { value: text }
     const m = list.find(m => e.path === `${root}/${m.repo_slug}/${m.id}.json`)
     if (!m) return { deny: `ENOENT ${e.path}` }
     return { value: JSON.stringify(m) }
@@ -440,4 +449,62 @@ test('linkPrs links known #N in prose and leaves code, links and fragments alone
   expect(linkPrs('see [#12](https://x/pull/12)', links)).toBe('see [#12](https://x/pull/12)')
   expect(linkPrs('https://x/y#12 and a/#12 and &#12;', links)).toBe('https://x/y#12 and a/#12 and &#12;')
   expect(linkPrs('#12', new Map())).toBe('#12')
+})
+
+test('noticesOf folds clears', () => {
+  const lines = [
+    { id: 'n_1', at: '2026-11-02T10:00:00Z', kind: 'question', mission: 'wbs-1', line: 'first', cleared: false },
+    { id: 'n_2', at: '2026-11-02T10:05:00Z', kind: 'failed', line: 'second', cleared: false },
+    { id: 'n_3', at: '2026-11-02T10:10:00Z', kind: 'question', mission: 'wbs-3', line: 'third', cleared: false },
+    { id: 'n_2', cleared: true, at: '2026-11-02T10:20:00Z' },
+  ]
+  expect(noticesOf(lines.map(l => JSON.stringify(l)).join('\n') + '\n')).toEqual([
+    { id: 'n_3', at: '2026-11-02T10:10:00Z', kind: 'question', mission: 'wbs-3', line: 'third' },
+    { id: 'n_1', at: '2026-11-02T10:00:00Z', kind: 'question', mission: 'wbs-1', line: 'first' },
+  ])
+  expect(noticesOf('')).toEqual([])
+})
+
+test('noticesOf skips bad lines', () => {
+  const good = JSON.stringify({ id: 'n_1', at: '2026-11-02T10:00:00Z', kind: 'k', line: 'ok', cleared: false })
+  const text = ['not json', good, '{"id":"n_2"}', '42', 'null', '{"id":5,"line":"x","at":"a","kind":"k"}'].join('\n')
+  expect(noticesOf(text)).toEqual([{ id: 'n_1', at: '2026-11-02T10:00:00Z', kind: 'k', line: 'ok' }])
+})
+
+test('coordinatorLineOf missing/fresh/stale', () => {
+  const now = Date.parse('2026-11-02T10:00:00Z')
+  const beat = (ago: number) => JSON.stringify({ at: now - ago * 60000, iso: '', terminal: 'term_1' })
+  expect(coordinatorLineOf(undefined, now)).toEqual({ text: 'Coordinator · not started', tone: 'idle' })
+  expect(coordinatorLineOf('not json', now)).toEqual({ text: 'Coordinator · not started', tone: 'idle' })
+  expect(coordinatorLineOf('{"at":"x"}', now)).toEqual({ text: 'Coordinator · not started', tone: 'idle' })
+  expect(coordinatorLineOf(beat(19), now)).toEqual({ text: 'Coordinator ✓ waiting · 19m', tone: 'ok' })
+  expect(coordinatorLineOf(beat(21), now)).toEqual({ text: 'Coordinator ✗ no wait for 21m', tone: 'err' })
+})
+
+test('the pane draws notices and the coordinator line', async ($, on) => {
+  const notice = (id: string, line: string) => JSON.stringify({ id, at: '2026-11-02T10:00:00Z', kind: 'question', mission: 'wbs-1', line, cleared: false })
+  const files = {
+    'notices.jsonl': [notice('n_1', 'one'), notice('n_2', 'two'), notice('n_3', 'three'), notice('n_4', 'four')].join('\n'),
+    heartbeat: JSON.stringify({ at: Date.now(), iso: '', terminal: 'term_1' }),
+  }
+  fakeFs(on, [sample], undefined, files)
+  await $.command.run(open)
+  const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
+  expect(await ui.find({ text: 'WBS-12345' })).toBeDefined()
+  const top = await ui.find({ type: 'Text', text: '! four' })
+  expect(top?.props.color).toBe('red')
+  expect(await ui.find({ text: '! two' })).toBeDefined()
+  expect(await ui.find({ text: '! one' })).toBeUndefined()
+  expect(await ui.find({ text: '+1 more' })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^Coordinator ✓ waiting · \d+m$/ })).toBeDefined()
+})
+
+test('notices and the coordinator line show with no open mission too', async ($, on) => {
+  const files = { 'notices.jsonl': JSON.stringify({ id: 'n_1', at: '2026-11-02T10:00:00Z', kind: 'k', line: 'look', cleared: false }) }
+  fakeFs(on, [], undefined, files)
+  await $.command.run(open)
+  const ui = await $.ui.mount({ plugin: 'pipeline', surface: 'terminal', component: 'Pane', requestId: PANE, props })
+  expect(await ui.find({ text: 'No open missions.' })).toBeDefined()
+  expect(await ui.find({ text: '! look' })).toBeDefined()
+  expect(await ui.find({ text: 'Coordinator · not started' })).toBeDefined()
 })
