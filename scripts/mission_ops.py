@@ -3,6 +3,9 @@
 
   mission_ops.py docs-commit <slug> <id> --scope S   # SKILL step 5: branch, copy, commit, then clean <repo>
   mission_ops.py prep-commit <slug> <id> --scope S   # Plan mode P1; prints the short sha
+  mission_ops.py prep-status <slug> <id>             # P1 recovery: user committed them -> short sha, else exit 1
+  mission_ops.py remove-old-plan <slug> <id>         # Plan mode Cleanup: untracked stages.plan.old_path -> rm
+  mission_ops.py owner-repo <repo-path>              # intake: origin URL -> owner/repo
   mission_ops.py move-doc <slug> <id> --to <rel>     # Plan mode Switch: move the spec into <repo>/<rel>
   mission_ops.py push <slug> <id>                    # git push -u origin <branch>, mission branch only
   mission_ops.py pr-split <slug> <id> --scope S      # pr-body.md -> pr-title.txt + pr-body-rest.md
@@ -11,10 +14,10 @@
 
 Each one reads the mission with state.load and touches only its repo, worktree,
 branch and files folder (ROOT/files/<slug>/<id>/). Exit codes: 0 ok, 3 refused or
-bad mission, 2 merge-watch timeout; a failing git/gh step passes its exit code
+bad mission, 2 merge-watch timeout, 1 prep-status not committed; a failing git/gh step passes its exit code
 through with its output on stderr. Never --force, --no-verify or --amend.
 """
-import argparse, json, os, shutil, subprocess, sys, time
+import argparse, json, os, re, shutil, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # python3 -I drops the script folder
@@ -93,12 +96,18 @@ def cmd_docs_commit(a, m):
     print(json.dumps({"kept": kept, "removed": removed}))
 
 
-def cmd_prep_commit(a, m):
-    repo = m["repo"]
-    prep = os.path.join(repo, m.get("prep_dir") or "") + os.sep
+def prep_paths(m):
+    """[spec, plan], both under <repo>/<prep_dir>; else Refused."""
+    prep = os.path.join(m["repo"], m.get("prep_dir") or "") + os.sep
     paths = [stage(m, "spec", "path"), stage(m, "plan", "path")]
     if not m.get("prep_dir") or not all(p.startswith(prep) for p in paths):
         raise Refused(f"spec and plan must be under {prep}")
+    return paths
+
+
+def cmd_prep_commit(a, m):
+    repo = m["repo"]
+    paths = prep_paths(m)
     if git(repo, "symbolic-ref", "-q", "HEAD", check=False).returncode != 0:
         raise Refused("detached HEAD")
     for name in GIT_STATE:
@@ -112,6 +121,41 @@ def cmd_prep_commit(a, m):
         git(repo, "reset", "-q", "--", *paths, check=False)
         raise
     print(git(repo, "rev-parse", "--short", "HEAD").stdout.strip())
+
+
+def cmd_prep_status(a, m):
+    repo, paths = m["repo"], prep_paths(m)
+    if git(repo, "status", "--porcelain", "--", *paths).stdout.strip():
+        return 1
+    sha = git(repo, "log", "-1", "--format=%h", "--", paths[1]).stdout.strip()
+    if not sha:
+        return 1
+    print(sha)
+
+
+def cmd_remove_old_plan(a, m):
+    repo, old = m["repo"], stage(m, "plan", "old_path")
+    if not old:
+        print(json.dumps({"removed": [], "kept": []}))
+        return
+    if os.path.relpath(old, repo).startswith(".."):
+        raise Refused(f"{old} is outside {repo}")
+    if tracked(repo, old):
+        print(json.dumps({"kept": [old]}))
+    else:
+        os.remove(old)
+        print(json.dumps({"removed": [old]}))
+
+
+OWNER_RE = re.compile(r"^(?:git@github\.com:|https://github\.com/)([^/\s]+)/([^/\s]+?)(?:\.git)?/?$")
+
+
+def owner_repo(repo):
+    r = git(repo, "remote", "get-url", "origin", check=False)
+    hit = OWNER_RE.match(r.stdout.strip()) if r.returncode == 0 else None
+    if not hit:
+        raise Refused(f"no GitHub origin in {repo}: {(r.stdout + r.stderr).strip()}")
+    return f"{hit.group(1)}/{hit.group(2)}"
 
 
 def cmd_move_doc(a, m):
@@ -188,8 +232,10 @@ def cmd_merge_watch(a, m):
 def main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("owner-repo").add_argument("repo_path")
     cmds = {}
     for name, fn in (("docs-commit", cmd_docs_commit), ("prep-commit", cmd_prep_commit),
+                     ("prep-status", cmd_prep_status), ("remove-old-plan", cmd_remove_old_plan),
                      ("move-doc", cmd_move_doc), ("push", cmd_push), ("pr-split", cmd_pr_split),
                      ("greptile-delay", cmd_greptile_delay), ("merge-watch", cmd_merge_watch)):
         s = sub.add_parser(name)
@@ -203,6 +249,13 @@ def main():
     cmds["merge-watch"][1].add_argument("--interval", type=float, default=300)
     cmds["merge-watch"][1].add_argument("--deadline", type=float, default=6 * 3600)
     a = p.parse_args()
+    if a.cmd == "owner-repo":  # intake: runs before the mission exists
+        try:
+            print(owner_repo(a.repo_path))
+            return 0
+        except Refused as e:
+            print(f"refused: {e}", file=sys.stderr)
+            return 3
     try:
         m = state.load(a.slug, a.id)
     except (OSError, ValueError) as e:

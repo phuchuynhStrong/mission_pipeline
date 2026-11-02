@@ -47,12 +47,21 @@ class OpsCase(unittest.TestCase):
         with open(path) as f:
             return f.read()
 
-    def mission(self, ticket="WBS-1", spec="", plan="", branch="feature/m1-x", pr=7, prep_dir="docs/preparation/m1"):
+    def mission(self, ticket="WBS-1", spec="", plan="", branch="feature/m1-x", pr=7, prep_dir="docs/preparation/m1",
+                old_path=""):
         m = {"id": "m1", "ticket": ticket, "title": "Add thing", "repo": self.repo,
              "base_branch": "main", "owner_repo": "o/r", "mode": "full", "prep_dir": prep_dir,
-             "stages": {"spec": {"path": spec}, "plan": {"path": plan},
+             "stages": {"spec": {"path": spec}, "plan": {"path": plan, "old_path": old_path},
                         "worktree": {"path": self.wt, "branch": branch}, "pr": {"number": pr}}}
         self.write(os.path.join(self.root, "app", "m1.json"), json.dumps(m))
+
+    def prep(self):
+        d = os.path.join(self.repo, "docs/preparation/m1")
+        spec, plan = os.path.join(d, "spec.md"), os.path.join(d, "plan.html")
+        self.write(spec, "s\n")
+        self.write(plan, "p\n")
+        self.mission(spec=spec, plan=plan)
+        return spec, plan
 
     def fake_gh(self, body):
         p = os.path.join(self.bin, "gh")
@@ -99,14 +108,6 @@ class DocsCommitTest(OpsCase):
 
 
 class PrepCommitTest(OpsCase):
-    def prep(self):
-        d = os.path.join(self.repo, "docs/preparation/m1")
-        spec, plan = os.path.join(d, "spec.md"), os.path.join(d, "plan.html")
-        self.write(spec, "s\n")
-        self.write(plan, "p\n")
-        self.mission(spec=spec, plan=plan)
-        return spec, plan
-
     def test_prep_commit_ok(self):
         self.prep()
         r = self.ops("prep-commit", "app", "m1", "--scope", "core")
@@ -131,6 +132,61 @@ class PrepCommitTest(OpsCase):
         self.assertIn("hook says no", r.stderr)
         self.assertEqual(git("-C", self.repo, "diff", "--cached", "--name-only").stdout, "")
         self.assertEqual(git("-C", self.repo, "rev-parse", "HEAD").stdout, head)
+
+
+class PrepStatusTest(OpsCase):
+    def test_prep_status_committed_prints_sha(self):
+        spec, plan = self.prep()
+        git("-C", self.repo, "add", "--", spec, plan)
+        git("-C", self.repo, "commit", "-q", "-m", "user commit")
+        r = self.ops("prep-status", "app", "m1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), git("-C", self.repo, "rev-parse", "--short", "HEAD").stdout.strip())
+
+    def test_prep_status_uncommitted_exit1(self):
+        self.prep()
+        r = self.ops("prep-status", "app", "m1")
+        self.assertEqual((r.returncode, r.stdout), (1, ""))
+
+
+class RemoveOldPlanTest(OpsCase):
+    def test_remove_old_plan_untracked_removed(self):
+        old = os.path.join(self.repo, "docs/plan.html")
+        self.write(old, "p\n")
+        self.mission(old_path=old)
+        r = self.ops("remove-old-plan", "app", "m1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), {"removed": [old]})
+        self.assertFalse(os.path.exists(old))
+
+    def test_remove_old_plan_tracked_kept(self):
+        old = os.path.join(self.repo, "README.md")
+        self.mission(old_path=old)
+        r = self.ops("remove-old-plan", "app", "m1")
+        self.assertEqual(json.loads(r.stdout), {"kept": [old]})
+        self.assertTrue(os.path.exists(old))
+
+    def test_remove_old_plan_empty_noop(self):
+        self.mission()
+        r = self.ops("remove-old-plan", "app", "m1")
+        self.assertEqual((r.returncode, json.loads(r.stdout)), (0, {"removed": [], "kept": []}))
+
+
+class OwnerRepoTest(OpsCase):
+    def owner(self, url):
+        git("-C", self.repo, "remote", "set-url", "origin", url)
+        return self.ops("owner-repo", self.repo)
+
+    def test_owner_repo_ssh(self):
+        self.assertEqual(self.owner("git@github.com:acme/app.git").stdout, "acme/app\n")
+
+    def test_owner_repo_https(self):
+        self.assertEqual(self.owner("https://github.com/acme/app").stdout, "acme/app\n")
+        self.assertEqual(self.owner("https://github.com/acme/app.git").stdout, "acme/app\n")
+
+    def test_owner_repo_no_origin(self):
+        git("-C", self.repo, "remote", "remove", "origin")
+        self.assertEqual(self.ops("owner-repo", self.repo).returncode, 3)
 
 
 class MoveDocTest(OpsCase):
