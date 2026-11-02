@@ -16,7 +16,7 @@ session starts with no memory of the chat.
 One coordinator that is always reachable. The user, other AI tools and other Claude
 sessions talk to it back and forth, like a chat. It runs every mission on this machine.
 
-**Success test:** every `ask` sent to the coordinator gets an answer, also across a crash,
+**Success test:** every question a tool sends to the coordinator gets an answer, also across a crash,
 a restart or a `/compact`. A duplicate answer after a crash is accepted; a missing one is not.
 
 ## Anti-goal
@@ -35,12 +35,14 @@ part works on its own (user, 2026-11-02).
 
 | Fact | Label | Source |
 |---|---|---|
+| `ask` from a plain terminal fails: `dispatch_inactive: ask requires an active supervised Dispatch` | VERIFIED | live test L1, 2026-11-02 |
+| `send --to run:<id> --type question` from a plain terminal works; the coordinator sees `from` = sender's terminal handle | VERIFIED | live test L1 |
+| `reply --id <msg>` delivers a `status` message, subject `Re: <subject>`, to the sender's terminal mailbox; the sender reads it with a plain `check` | VERIFIED | live test L1 |
+| An outside `question` is consumed by the first `check` (plain, `--run`, or `--wait`); a second check returns nothing; no Delivery id is shown | VERIFIED | live test L2 |
+| A consumed message stays in `orchestration inbox` with `to: run:<id>` and `handled: true` | VERIFIED | live test L2 |
+| `inbox` has `--limit` only: no recipient filter, no paging | VERIFIED | `orca orchestration inbox --help` |
 | The shared Run id is saved in `~/.claude/pipeline/coordinator.json`; Binding rejoins it | VERIFIED | `SKILL.md:56`, `:73-82` |
-| `ask` blocks until answered; on timeout the question stays pending; `--resume <message_id>` waits again; max 30 min per wait | VERIFIED | `orca orchestration ask --help` |
-| `ask --to run:<id>` addresses a Run, not a terminal | VERIFIED (usage line only; the flag has no description) | `orca orchestration ask --help` |
-| `ask` has `--dispatch-capability`; from an active Dispatch a message defaults to its own Run | VERIFIED | `orca orchestration ask --help`, `send --help` |
-| The coordinator answers with `orchestration reply --id <msg_id> --body <text>` | VERIFIED | `orca orchestration reply --help` |
-| A bound Run replays the same Delivery until `--ack` **or all its messages are marked read** | VERIFIED | `orca orchestration check --help` |
+| A bound Run replays the same Delivery until `--ack` or all its messages are marked read | VERIFIED (help text); **not seen for outside `send` messages** (L2) | `orca orchestration check --help` |
 | `terminal send` needs a live terminal; it returns a "queued/input-accepted receipt", but nothing replays a message the session never handled | VERIFIED (live terminal, receipt), INFERRED (no replay) | `orca --help`; `orca terminal send --help` |
 | `orca agent launch --surface terminal` always runs the agent CLI in a terminal, whatever the Chat UI setting | VERIFIED | `orca agent launch --help` |
 | A message with no mission owner is dropped today ("take no action") | VERIFIED | `SKILL.md:276-282` |
@@ -54,13 +56,13 @@ part works on its own (user, 2026-11-02).
 | `state.py list` and the board read only `*.json` inside sub-folders of `~/.claude/pipeline` | VERIFIED | `scripts/state.py` `cmd_list`; `hooks/register.tsx:333-335` |
 | `run-use` from a new terminal takes over a live Run; unacked messages replay under a new Delivery id | VERIFIED | shared-run design, T1 step 2 |
 | Orca automations take a cron trigger, a `--precheck` command and `--reuse-session` | VERIFIED | `orca automations create --help` |
-| Payload of an `ask` from a plain terminal, and from inside another Run's Dispatch | UNKNOWN | live tests L1, L1b |
-| Whether `reply` marks a question read (which ends its replay) | UNKNOWN | live test L2 |
-| Whether a `reply` sent after the asker stopped waiting reaches a later `--resume` | UNKNOWN | live test L2 |
-| How Claude Code orders input typed by `terminal send` while a turn is running | UNKNOWN | live test L3 |
-| Whether an outside process can see that the coordinator is fenced or at a permission prompt | UNKNOWN | live tests L4, L6 |
-| How Claude Code permission rules match subcommands, `${CLAUDE_PLUGIN_ROOT}`, `$(...)` and redirects | UNKNOWN | live test L6 |
-| A `SessionStart` hook with matcher `compact` runs after an automatic or manual compact | INFERRED | live test L7 |
+| A worker of one Run cannot `send` to another Run: `dispatch_run_mismatch` | VERIFIED | live test L1b |
+| Whether a reply carries any id linking it to the question (only `Re: <subject>` was seen) | UNKNOWN | — |
+| What happens to a reply when the sender's terminal closes before it reads it | UNKNOWN | — |
+| Input typed by `terminal send` during a turn is queued and handled after the turn | VERIFIED (one run) | live test L3 |
+| Fencing shows as `run-current --from <handle>` → `runId: null`; a permission prompt shows in `terminal read --screen` | VERIFIED | live tests L4, L6 |
+| Prefix rules like `Bash(orca status:*)` match; deny rules block; off-list prompts. Matching of `${CLAUDE_PLUGIN_ROOT}`, `$(...)` and redirects was not tested | VERIFIED / UNKNOWN | live test L6 |
+| A `SessionStart` hook with matcher `compact` runs after a manual `/compact` (automatic compact not tested) | VERIFIED / INFERRED | live test L7 |
 
 ## Design
 
@@ -92,16 +94,27 @@ part works on its own (user, 2026-11-02).
 
 ### 3. Channels
 
-| | `ask` (main channel) | `terminal send` (escape hatch) |
-|---|---|---|
-| Command | `orca orchestration ask --to run:<shared> --question "<text>"` | `orca terminal send --terminal <coordinator> --text … --enter` |
-| Use for | everything that must arrive: status, details, start, stop, decisions, any request | anything else a human would type; never for a message that must arrive |
-| Coordinator down | waits in the Run | not replayed |
-| Answer | `reply` to the asker | screen text, read with `terminal read` |
+`ask` only works from inside a supervised Dispatch (L1), so outside tools use `send`. A
+session that is itself a worker of another Run cannot send to the shared Run
+(`dispatch_run_mismatch`, L1b); only plain terminals (tools, your own Claude sessions) can.
 
-Tools find `<shared>` with `python3 -I <plugin root>/scripts/state.py run` (full path, so it
-works from any repo). They resume a timed-out `ask` with `--resume <message_id>`, never by
-sending a new question.
+| | `send` question (main channel) | `terminal send` (escape hatch) |
+|---|---|---|
+| Command | `orca orchestration send --to run:<shared> --type question --subject "<tag> <title>" --body "<text>"` | `orca terminal send --terminal <coordinator> --text … --enter` |
+| Use for | everything that must arrive: status, details, start, stop, decisions, any request | anything else a human would type; never for a message that must arrive |
+| Coordinator down | kept in the Run until read | not replayed |
+| Answer | `reply` → `status` message in the sender's terminal mailbox, subject `Re: <subject>` | screen text, read with `terminal read` |
+
+- Tools find `<shared>` with `python3 -I <plugin root>/scripts/state.py run` (full path, so
+  it works from any repo).
+- The tool waits for the answer with `orca orchestration check --wait --timeout-ms <n>
+  --json` in its own terminal and matches it by subject.
+- **Tag (my call):** the subject starts with a unique tag the tool picks (e.g. `[t-<random>]`),
+  because no reply-to id was seen (UNKNOWN). The coordinator keeps the subject in its reply.
+- A tool that times out waits again with `check --wait`. It never sends the question again,
+  because the coordinator would act twice.
+- The sender must stay in a live Orca terminal until it reads the answer (what happens to a
+  reply for a closed terminal is UNKNOWN).
 
 ### 4. Routing and the handled log
 
@@ -135,15 +148,21 @@ Written only through `state.py` (new subcommands; names left to the builder).
 
 - Order for every outside ask: write `started` → act → `reply` → write `answered` → ack the
   batch (the ack stays last, `SKILL.md:284`).
-- **Recovery** (routing step 2, and at Binding for every `started` line with no `answered`,
-  because a `reply` may have marked the message read and ended its replay, L2): check
-  whether the action happened (e.g. `state.py show`).
+- **Orca does not replay an outside question** (L2): the first `check` consumes it. So the
+  handled log is the main safety, and a crash after `check` but before `started` would lose
+  the message. **Inbox scan** closes that gap: at Binding and after every wake, before the
+  wait is re-armed, read `orca orchestration inbox --limit <n> --json`, keep rows with
+  `to: run:<shared>` and `type: question`, and treat each one with no `answered` line as a
+  new message (routing from step 1). `inbox` has no recipient filter or paging, so `<n>`
+  must cover the busiest gap between scans; the value and what to do when the oldest row is
+  still unhandled are left to the builder.
+- **Recovery** (routing step 2, and at Binding for every `started` line with no `answered`):
+  check whether the action happened (e.g. `state.py show`).
   - Done → reply with the result, write `answered`.
   - Not done → do it now, reply, write `answered`.
   - Cannot tell (free-text action with no trace) → reply "I may have done this before a
     restart; check <what>", write `answered`.
-- A crash between `reply` and `answered` can send a second answer (accepted). If L2 shows
-  `reply --retry-request <msg id>` makes the second reply a no-op, use it.
+- A crash between `reply` and `answered` can send a second answer (accepted).
 - Prune rule for old lines: left to the builder.
 
 ### 5. Memory
@@ -163,8 +182,11 @@ Written only through `state.py` (new subcommands; names left to the builder).
   `references/orca-commands.md:93` moves too.
 - `inbox.json` stays in the session's scratchpad. An unacked batch replays after a restart,
   and a shared file would let a fenced old session overwrite the new session's batch.
-- `~/.claude/pipeline` is outside the dedicated workspace, so it goes in the workspace's
-  `additionalDirectories` (INFERRED that acceptEdits needs this; L6).
+- **Writes under `~/.claude/pipeline` prompt** with the Write tool, even with
+  `additionalDirectories` (L6). So the coordinator never uses Write or Edit there: every
+  file it writes (`mission.md`, notes, notices, handled log) goes through `state.py` or a
+  plugin script, which the allowlist covers (my call). Workers keep writing their own
+  reports; whether they hit the same prompt is left to the builder to check.
 
 ### 6. Notices
 
@@ -214,7 +236,10 @@ Runs every minute.
 1. Saved handle in `coordinator.json` is not in `orca terminal list --json` → launch a new
    coordinator (§1 command). The new session's Binding takes over the Run; unacked messages
    replay.
-2. Handle is live but `heartbeat` is older than 20 min (15 min wait + grace) → do **not**
+2. Handle is live but not working → do **not** launch. "Not working" is any of:
+   `orca orchestration run-current --from <handle>` is not the shared Run (fenced, L4);
+   `terminal read --screen` shows a permission prompt ("Do you want to proceed?", "Do you
+   want to create", L6); `heartbeat` older than 20 min (15 min wait + grace). Do not
    launch (a second session would fence the first, `SKILL.md:306`). Write a notice (§6):
    "coordinator not waiting: <handle>". This covers a Binding failure, `consumer_fenced`,
    Claude exited to the shell, and a stalled permission prompt.
@@ -233,14 +258,16 @@ Runs every minute.
 
 | Moment | Who starts it | Condition |
 |---|---|---|
-| First time (cutover) | The user, by hand | No mission has a live worker; its Binding fences the old session, which the user then closes |
+| First time (cutover) | The user, by hand | No mission has a live worker; the user answers the one-time folder trust dialog (L6); its Binding fences the old session, which the user then closes |
 | Terminal gone (crash, closed, Claude exited) | Watchdog | Saved handle not in `orca terminal list`, no launch in the last 10 min |
 | After a reboot | Watchdog (launchd at login, after `orca open`) | Same as the row above |
 | Terminal live but not waiting (fenced, prompt, Binding failed) | Nobody | Notice on the board; the user fixes it |
 | Two launches in a row failed | Nobody | Notice; watchdog pauses until the user clears it |
 
 The launch inherits accept-edits mode and the allowlist from the workspace's
-`.claude/settings.json` (`permissions.defaultMode: "acceptEdits"`; INFERRED, L6 checks).
+`.claude/settings.json` (`permissions.defaultMode: "acceptEdits"`; VERIFIED, L6). Nothing
+is typed into a coordinator terminal until its screen shows the idle prompt, because text
+typed during startup once replaced the launch prompt (L3).
 
 ### 10. Watchers survive a restart
 
@@ -306,18 +333,18 @@ allowlist (§11) limits what it can do; it does not remove the risk.
 
 | Id | Test | Decides |
 |---|---|---|
-| L1 | From a plain terminal (no Dispatch), `ask --to run:<shared>`; read the batch JSON | message type, where the msg id and sender sit, payload shape |
-| L1b | Same, from a worker Dispatch of another Run | whether it carries a `dispatchId` (§4 routing 5) |
-| L2 | `ask` with a short `--timeout-ms`, let it time out, coordinator `reply`, then `ask --resume`; then check whether the batch still replays after the `reply`; try `reply --retry-request` twice | late reply reaches asker; `reply` marks read; duplicate reply prevention |
-| L3 | `terminal send` to the coordinator while it handles a wake | queue or interrupt; how strongly §3 must warn |
-| L4 | Bind the Run from a second terminal; check the first terminal's heartbeat and `run-current --from <handle>` | whether fencing is visible from outside |
-| L5 | Orca automation with a precheck that exits 0 when the saved handle is not live; also quit Orca and see whether the automation still runs | automation vs launchd |
-| L6 | In the dedicated workspace with the §11 settings: run one command per rule, one off-list command, and writes into `~/.claude/pipeline`; from outside, `orca terminal show` / `terminal read --screen` | rule matching works; nothing needed prompts; a prompt is visible from outside |
-| L7 | `SessionStart` hook with matcher `compact`; run `/compact` | notes come back after a compact |
+| L1 | **Done 2026-11-02.** `ask` fails outside a Dispatch; `send` + `reply` work | §3 channel changed to `send` |
+| L1b | **Done.** A worker of Run A sending `--to run:<B>` is refused: `dispatch_run_mismatch` | Only plain terminals reach the coordinator; workers of other Runs cannot (§3) |
+| L2 | **Done 2026-11-02.** No replay of outside questions; consumed rows stay in `inbox` | §4 inbox scan added |
+| L3 | **Done.** Text typed while a turn runs waits and is handled after the turn; it does not interrupt. Once, text typed while Claude was still starting replaced the launch prompt (cause INFERRED) | §1 launch waits for idle before anything is typed |
+| L4 | **Done.** After another terminal binds the Run, `run-current --from <old handle>` returns `runId: null` | §9 detects fencing directly |
+| L5 | **Done (part).** An automation with `* * * * *` ran its precheck every minute (`skipped_precheck`). The quit-Orca part was skipped (it would close every terminal) | automation works while Orca runs; reboot case stays UNKNOWN, launchd still preferred |
+| L6 | **Done.** Project `defaultMode: acceptEdits` applied; allow rules ran with no prompt; deny rule blocked; an off-list command prompted, and the prompt text is visible with `terminal read --screen`. A first launch in a new folder shows a trust dialog. A Write-tool file in `~/.claude/pipeline` **prompted** even with `additionalDirectories` | §5 writes go through scripts; §1 first launch by hand; §9 reads the screen |
+| L7 | **Done.** A `SessionStart` hook with matcher `compact` put its text into context after `/compact` | §5 notes hook confirmed |
 
-All eight run before the plan is written. If L1, L1b or L2 comes out against this design
-(no stable msg id, or a late reply is lost), the design goes back to the user; no fallback
-is chosen in advance.
+All eight ran on 2026-11-02 on throwaway Runs (`run_ff9f6fa85f6f`, `run_5c14faff8cc1`); the
+shared Run was not touched. L1 and L2 went against the first draft; the user approved the
+`send` channel and the inbox scan. The test automation and terminals were removed.
 
 ## Cutover (my call)
 
