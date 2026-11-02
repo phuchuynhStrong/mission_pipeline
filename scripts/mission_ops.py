@@ -9,6 +9,7 @@
   mission_ops.py move-doc <slug> <id> --to <rel>     # Plan mode Switch: move the spec into <repo>/<rel>
   mission_ops.py push <slug> <id>                    # git push -u origin <branch>, mission branch only
   mission_ops.py pr-split <slug> <id> --scope S      # pr-body.md -> pr-title.txt + pr-body-rest.md
+  mission_ops.py pr-create <slug> <id>               # gh pr create from those files -> {"number":N,"url":...}
   mission_ops.py greptile-delay <slug> <id> [--seconds 300]
   mission_ops.py merge-watch <slug> <id> [--interval 300] [--deadline 21600]
 
@@ -75,19 +76,30 @@ def cmd_docs_commit(a, m):
     srcs = docs(m)
     if not branch or not wt or not srcs:
         raise Refused("mission has no worktree branch, worktree path or spec/plan")
-    git(wt, "switch", "-c", branch)
     rels = []
-    for src in srcs:
+    for src in srcs:  # validate every source before any git step
         rel = os.path.relpath(src, repo)
         if rel.startswith(".."):
             raise Refused(f"{src} is outside {repo}")
-        os.makedirs(os.path.dirname(os.path.join(wt, rel)), exist_ok=True)
-        shutil.copyfile(src, os.path.join(wt, rel))
         rels.append(rel)
+    on_branch = git(wt, "symbolic-ref", "-q", "--short", "HEAD", check=False).stdout.strip() == branch
+    for src, rel in zip(srcs, rels):
+        # a re-run after success: the source is gone but the branch already has the file
+        if not os.path.exists(src) and not (on_branch and tracked(wt, rel)):
+            raise Refused(f"{src} is missing")
+    if not on_branch:  # a re-run after a failed commit is already on the branch
+        git(wt, "switch", "-c", branch)
+    for src, rel in zip(srcs, rels):
+        if os.path.exists(src):
+            os.makedirs(os.path.dirname(os.path.join(wt, rel)), exist_ok=True)
+            shutil.copyfile(src, os.path.join(wt, rel))
     git(wt, "add", "--", *rels)
-    git(wt, "commit", "-m", message(m, "docs", a.scope, "add spec and plan"), "--", *rels)
+    if git(wt, "diff", "--cached", "--quiet", "--", *rels, check=False).returncode != 0:
+        git(wt, "commit", "-m", message(m, "docs", a.scope, "add spec and plan"), "--", *rels)
     kept, removed = [], []
     for src in srcs:
+        if not os.path.exists(src):
+            continue
         if tracked(repo, src):
             kept.append(src)
         else:
@@ -196,6 +208,33 @@ def cmd_pr_split(a, m):
     print(title)
 
 
+def cmd_pr_create(a, m):
+    d, branch, repo = files_dir(a), stage(m, "worktree", "branch"), m.get("owner_repo") or ""
+    if not branch or not repo or not m.get("base_branch"):
+        raise Refused("mission has no worktree branch, owner_repo or base_branch")
+    with open(os.path.join(d, "pr-title.txt")) as f:
+        title = f.read().strip("\n")
+    r = subprocess.run(["gh", "pr", "create", "--repo", repo, "--base", m["base_branch"], "--head", branch,
+                        "--title", title, "--body-file", os.path.join(d, "pr-body-rest.md")],
+                       capture_output=True, text=True)
+    if r.returncode == 0:
+        url = r.stdout.strip().splitlines()[-1] if r.stdout.strip() else ""
+        hit = re.search(r"/pull/(\d+)", url)
+        print(json.dumps({"number": int(hit.group(1)) if hit else None, "url": url}))
+        return 0
+    # "Something went wrong" may still have made the PR: look before failing
+    lst = subprocess.run(["gh", "pr", "list", "--repo", repo, "--head", branch, "--state", "all",
+                          "--json", "number,url"], capture_output=True, text=True)
+    try:
+        prs = json.loads(lst.stdout) if lst.returncode == 0 else []
+    except ValueError:
+        prs = []
+    if prs:
+        print(json.dumps({"number": prs[0].get("number"), "url": prs[0].get("url")}))
+        return 0
+    raise Failed(r.returncode, (r.stderr + r.stdout).strip())
+
+
 def pr_number(m):
     n = stage(m, "pr", "number")
     if not n:
@@ -237,6 +276,7 @@ def main():
     for name, fn in (("docs-commit", cmd_docs_commit), ("prep-commit", cmd_prep_commit),
                      ("prep-status", cmd_prep_status), ("remove-old-plan", cmd_remove_old_plan),
                      ("move-doc", cmd_move_doc), ("push", cmd_push), ("pr-split", cmd_pr_split),
+                     ("pr-create", cmd_pr_create),
                      ("greptile-delay", cmd_greptile_delay), ("merge-watch", cmd_merge_watch)):
         s = sub.add_parser(name)
         s.add_argument("slug")

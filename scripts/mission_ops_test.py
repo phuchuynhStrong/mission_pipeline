@@ -102,6 +102,46 @@ class DocsCommitTest(OpsCase):
         self.assertEqual(git("-C", self.wt, "log", "-1", "--format=%s").stdout.strip(),
                          "docs(core): add spec and plan")
 
+    def docs_mission(self):
+        spec = os.path.join(self.repo, "docs/spec.md")
+        plan = os.path.join(self.repo, "docs/plan.html")
+        self.write(spec, "spec\n")
+        self.write(plan, "plan\n")
+        self.mission(spec=spec, plan=plan)
+        return spec, plan
+
+    def test_docs_commit_rerun_after_hook_failure(self):
+        spec, plan = self.docs_mission()
+        hook = os.path.join(self.repo, ".git", "hooks", "pre-commit")
+        self.write(hook, "#!/bin/sh\necho hook says no >&2\nexit 1\n")
+        os.chmod(hook, 0o755)
+        r = self.ops("docs-commit", "app", "m1", "--scope", "core")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertTrue(os.path.exists(spec))
+        os.remove(hook)
+        r = self.ops("docs-commit", "app", "m1", "--scope", "core")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), {"kept": [], "removed": [spec, plan]})
+        self.assertEqual(git("-C", self.wt, "log", "-1", "--format=%s").stdout.strip(),
+                         "#WBS-1 docs(core): add spec and plan")
+
+    def test_docs_commit_rerun_after_success_noop(self):
+        self.docs_mission()
+        self.assertEqual(self.ops("docs-commit", "app", "m1", "--scope", "core").returncode, 0)
+        head = git("-C", self.wt, "rev-parse", "HEAD").stdout
+        r = self.ops("docs-commit", "app", "m1", "--scope", "core")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), {"kept": [], "removed": []})
+        self.assertEqual(git("-C", self.wt, "rev-parse", "HEAD").stdout, head)
+
+    def test_docs_commit_source_outside_repo_refused_before_switch(self):
+        out = os.path.join(self.home, "spec.md")
+        self.write(out, "s\n")
+        self.mission(spec=out, plan=out)
+        r = self.ops("docs-commit", "app", "m1", "--scope", "core")
+        self.assertEqual(r.returncode, 3)
+        self.assertEqual(git("-C", self.wt, "branch", "--show-current").stdout.strip(), "")
+
     def test_docs_commit_no_branch_exit3(self):
         self.mission(branch="")
         self.assertEqual(self.ops("docs-commit", "app", "m1", "--scope", "core").returncode, 3)
@@ -232,6 +272,50 @@ class PrSplitTest(OpsCase):
         self.write(os.path.join(self.files, "pr-body.md"), "Short title\nrest\n")
         r = self.ops("pr-split", "app", "m1", "--scope", "core")
         self.assertEqual(r.stdout, "Short title\n")
+
+
+class PrCreateTest(OpsCase):
+    def setUp(self):
+        super().setUp()
+        self.mission()
+        self.write(os.path.join(self.files, "pr-title.txt"), "#WBS-1 feat(core): it's \"x\"\n")
+        self.write(os.path.join(self.files, "pr-body-rest.md"), "body\n")
+        self.log = os.path.join(self.home, "gh.log")
+
+    def gh(self, create_rc, list_out="[]"):
+        self.fake_gh(f"""for a in "$@"; do printf '%s\\n' "$a"; done >> '{self.log}'; echo --- >> '{self.log}'
+if [ "$2" = create ]; then
+  [ {create_rc} -eq 0 ] && echo https://github.com/o/r/pull/9 && exit 0
+  echo 'Something went wrong' >&2; exit {create_rc}
+fi
+echo '{list_out}'
+""")
+
+    def calls(self):
+        return [c.strip("\n").split("\n") for c in self.read(self.log).split("---\n") if c.strip()]
+
+    def test_pr_create_ok(self):
+        self.gh(0)
+        r = self.ops("pr-create", "app", "m1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), {"number": 9, "url": "https://github.com/o/r/pull/9"})
+        self.assertEqual(self.calls()[0], ["pr", "create", "--repo", "o/r", "--base", "main", "--head", "feature/m1-x",
+                                           "--title", '#WBS-1 feat(core): it\'s "x"', "--body-file",
+                                           os.path.join(self.files, "pr-body-rest.md")])
+
+    def test_pr_create_failed_but_exists(self):
+        self.gh(1, '[{"number":9,"url":"u9"}]')
+        r = self.ops("pr-create", "app", "m1")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), {"number": 9, "url": "u9"})
+        self.assertEqual(self.calls()[1], ["pr", "list", "--repo", "o/r", "--head", "feature/m1-x",
+                                           "--state", "all", "--json", "number,url"])
+
+    def test_pr_create_failed_none_exists(self):
+        self.gh(4)
+        r = self.ops("pr-create", "app", "m1")
+        self.assertEqual(r.returncode, 4)
+        self.assertIn("Something went wrong", r.stderr)
 
 
 class WatchTest(OpsCase):
