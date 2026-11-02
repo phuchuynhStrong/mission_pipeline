@@ -102,13 +102,37 @@ class CliTest(CoordCase):
         self.assertEqual([x["sequence"] for x in json.loads(r.stdout)], [11, 12])
         self.assertEqual(self.calls(), [coord.inbox_argv("run_a", 100)[1:]])
 
-    def test_scan_window_short_writes_notice_exit5(self):
+    def test_wait_creates_missing_out_folder(self):
+        self.reply('{"ok":true}')
+        out = os.path.join(self.home, "a", "b", "wait.json")
+        r = self.coord("wait", "--run", "run_a", "--out", out)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.read(out), '{"ok":true}')
+
+    def test_wait_error_backoff_then_passthrough(self):
+        self.reply('{"ok":false,"error":{"code":"boom"}}')
+        out = os.path.join(self.home, "wait.json")
+        r = self.coord("wait", "--run", "run_a", "--out", out, "--error-backoff", "0", FAKE_ORCA_EXIT="2")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("boom", r.stdout)
+
+    def test_wait_fenced_exits_without_backoff(self):
+        self.reply('{"ok":false,"error":{"code":"consumer_fenced"}}')
+        out = os.path.join(self.home, "wait.json")
+        r = subprocess.run([sys.executable, "-I", COORD, "wait", "--run", "run_a", "--out", out],
+                           env={**self.env, "FAKE_ORCA_EXIT": "1"}, capture_output=True, text=True, timeout=20)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("consumer_fenced", r.stdout)
+
+    def test_wait_error_backoff_default_60(self):
+        self.assertEqual(coord.parser().parse_args(["wait", "--run", "R", "--out", "x"]).error_backoff, 60)
+
+    def test_scan_window_short_exit5_no_notice(self):
         self.state("scan", "seed", "--run", "run_a", stdin=inbox(row(10)))
         self.reply(inbox(row(21), row(20)))
         r = self.coord("scan", "--run", "run_a", "--limit", "2")
         self.assertEqual(r.returncode, 5)
-        notes = [json.loads(l) for l in self.read(os.path.join(self.root, "notices.jsonl")).splitlines()]
-        self.assertEqual([n["kind"] for n in notes], ["scan"])
+        self.assertFalse(os.path.exists(os.path.join(self.root, "notices.jsonl")))
 
     def test_advance_window_short_exit5_floor_kept(self):
         self.state("scan", "seed", "--run", "run_a", stdin=inbox(row(10)))
