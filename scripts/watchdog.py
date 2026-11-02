@@ -115,11 +115,13 @@ def gather(wd):
     coord = coord or {}
     saved = coord.get("terminal")
     shared = coord.get("run_id") or ""
-    listed = orca("terminal", "list", "--json")
+    listed = orca("terminal", "list", "--limit", "1000", "--json")
     live = None
     try:
         live = {t["handle"] for t in listed["result"]["terminals"]}
-    except (TypeError, KeyError):
+        if listed["result"].get("truncated"):
+            live = None  # partial list: the saved terminal may be past the cut, so unknown
+    except (TypeError, KeyError, AttributeError):
         live = None
     bound, screen = None, ""
     if live is not None and saved in live:
@@ -180,8 +182,8 @@ def cmd_run(a):
         term = find_terminal(receipt)
         if term:
             coord, ok = read_file_json(state.COORD)
-            if ok:
-                state.write_json(state.COORD, {**(coord or {}), "terminal": term})
+            if ok and isinstance(coord, dict) and isinstance(coord.get("run_id"), str) and coord["run_id"]:
+                state.write_json(state.COORD, {**coord, "terminal": term})
     elif action == "notice":
         notice(wd, reason)
     elif action == "ok":

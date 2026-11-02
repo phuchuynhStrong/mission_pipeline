@@ -96,7 +96,8 @@ if a[:2] == ["orchestration", "run-current"] and os.path.exists(os.path.join(d, 
 if a[:1] == ["status"]:
     sys.exit(int(open(os.path.join(d, "status_rc")).read()))
 canned = {"open": {"ok": True},
-          "terminal list": {"result": {"terminals": [{"handle": h, "title": ""} for h in open(os.path.join(d, "handles")).read().split()]}},
+          "terminal list": {"result": {"terminals": [{"handle": h, "title": ""} for h in open(os.path.join(d, "handles")).read().split()],
+                                       "truncated": os.path.exists(os.path.join(d, "truncated"))}},
           "orchestration run-current": {"ok": True, "result": {"runId": "run_1"}},
           "terminal read": {"result": {"terminal": {"tail": ["idle"]}}},
           "agent launch": {"ok": True, "result": {"terminal": {"handle": "term_new"}}}}
@@ -193,6 +194,30 @@ class RunCase(unittest.TestCase):
         self.assertEqual(self.wd("run", "--workspace", "/ws").returncode, 0)
         c = self.rjson("coordinator.json")
         self.assertEqual((c["terminal"], c["run_id"], c["created"]), ("term_new", "run_1", "c"))
+
+    def test_terminal_list_asks_1000(self):
+        self.wd("run", "--workspace", "/ws")
+        self.assertIn(["terminal", "list", "--limit", "1000", "--json"], self.argv())
+
+    def test_truncated_list_is_unknown_never_launch(self):
+        self.set("handles", "term_b")
+        self.set("truncated", "1")
+        r = self.wd("run", "--workspace", "/ws")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(any(a[:2] == ["agent", "launch"] for a in self.argv()))
+        self.assertEqual([n["line"] for n in self.notices()], ["coordinator: orca not answering"])
+
+    def test_launch_without_coord_file_writes_no_coord(self):
+        os.remove(os.path.join(self.root, "coordinator.json"))
+        self.assertEqual(self.wd("run", "--workspace", "/ws").returncode, 0)
+        self.assertTrue(any(a[:2] == ["agent", "launch"] for a in self.argv()))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "coordinator.json")))
+
+    def test_launch_with_empty_run_id_keeps_coord(self):
+        self.wjson("coordinator.json", {"run_id": "", "terminal": "term_a"})
+        self.set("handles", "term_b")
+        self.assertEqual(self.wd("run", "--workspace", "/ws").returncode, 0)
+        self.assertEqual(self.rjson("coordinator.json"), {"run_id": "", "terminal": "term_a"})
 
     def test_bad_coord_is_notice_not_launch(self):
         with open(os.path.join(self.root, "coordinator.json"), "w") as f:
