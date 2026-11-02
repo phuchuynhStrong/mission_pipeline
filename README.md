@@ -74,6 +74,28 @@ plugin folder; `<shared>` comes from `python3 -I <root>/scripts/state.py run`.
    python3 -I <root>/scripts/watchdog.py resume
    ```
 
+6. After every plugin update, run step 2 (settings) and step 4 (plist, then `launchctl
+   unload` and `load` it again) once more: both files hold `<root>`, and `<root>` holds the
+   plugin version, so the old paths point at a folder that is gone.
+
+## For tool authors
+
+A tool (or another Claude session) asks the coordinator through Orca, never by typing into
+its terminal:
+
+1. Find the Run: `python3 -I <root>/scripts/state.py run` → `<shared>`.
+2. Send: `orca orchestration send --to run:<shared> --type question --subject '<title>'
+   --body '<text>' --json`. Keep the `messageId` from the receipt.
+3. Wait in your own terminal: `orca orchestration check --wait --full --json` (add
+   `--timeout-ms <n>`). The answer is a `status` message whose `thread_id` is your
+   `messageId`; one batch can hold several replies, keep the ones you did not match.
+4. On a timeout, wait again. Never send the question again: the coordinator would act twice.
+5. Lost the `check` result (crash, context loss)? Find the reply with `orca orchestration
+   inbox --terminal <own handle> --full --json`, matched by `thread_id`.
+6. Stay in a live Orca terminal until you have read the answer.
+7. A worker of another Run cannot send to the shared Run (`dispatch_run_mismatch`); only
+   plain terminals can.
+
 ## Layout
 
 ```

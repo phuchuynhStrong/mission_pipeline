@@ -59,7 +59,7 @@ released after its last task. `events+="released <role> <handle>"` each time.
 | handled log | `~/.claude/pipeline/handled.jsonl`: one `started` and one `answered` line per message, written only with `state.py handled start|answer` |
 | scan floor | `~/.claude/pipeline/scan.json`, moved only by `coord.py seed|advance` |
 | notices | `~/.claude/pipeline/notices.jsonl`, written with `state.py notice add`, read with `notice list`, cleared with `notice clear` |
-| notes | `~/.claude/pipeline/coordinator-notes.md`, `state.py note add "<line>"` / `note show`; a `SessionStart` compact hook prints them after `/compact` |
+| notes | `~/.claude/pipeline/coordinator-notes.md`, `state.py note add '<line>'` / `note show`; a `SessionStart` compact hook prints them after `/compact` |
 | heartbeat | `~/.claude/pipeline/heartbeat`, written by `coord.py wait` each time the wait is armed; the watchdog reads it |
 | spec | `<repo>/docs/superpowers/specs/YYYY-MM-DD-<id>-<slug>-design.md`; from step 5 on, the same relative path in the worktree |
 | plan | `<repo>/docs/superpowers/plans/YYYY-MM-DD-<id>-<slug>.md`; from step 5 on, the same relative path in the worktree |
@@ -78,13 +78,27 @@ released after its last task. `events+="released <role> <handle>"` each time.
    absolute path `<repo>` (and a selector for `orca worktree create`). No repo, or one not in
    that list → ask for a registered repo and create no mission. Get the ticket text (orca-linear skill if it is a Linear id). Parse `--base
    <branch>` from the arguments (default: the repo's default branch).
-   `orca status --json`, then **Binding** (below) → `<shared>`. Then
+   `orca status --json`, then `<shared>`: at session start that is **Binding** (below); inside
+   a live, bound session it is the saved id (`state.py run`), and Binding steps 5 to 7 (seed,
+   `handled open` and Recovery, watcher re-arm) do not run again: they run only at session
+   start. Then
    `state.py new <repo-basename> <id> ... --repo <repo> --base-branch <base> --run-id <shared>`, then
-   write `mission.md` with `state.py file write <repo-basename> <id> mission.md` (the text on
-   stdin), then `mission_ops.py owner-repo <repo>` → `state.py set ... owner_repo=<owner/repo>`.
+   write `mission.md` with `state.py file write <repo-basename> <id> mission.md <<'MISSION_EOF'`
+   (the text on stdin through a heredoc with that quoted, unique delimiter, so `$`, backticks
+   and quotes in the ticket text stay as they are; close it with a `MISSION_EOF` line), then `mission_ops.py owner-repo <repo>` → `state.py set ... owner_repo=<owner/repo>`.
    `--plan-only` in the arguments (or `/pipeplan`) → **Plan mode** (below): pick `prep_dir`
    (Plan mode, Folder), then `state.py set ... mode=plan prep_dir=<rel>`.
    Open the board: `/pboard`. No mission creates its own Run.
+
+   **Another coordinator?** Before Binding, read the `terminal` field of
+   `~/.claude/pipeline/coordinator.json` (Read tool, read only). It is set, it is not
+   `$ORCA_TERMINAL_HANDLE`, and `orca terminal list --limit 1000 --json` lists it → another
+   coordinator is live: do not bind and do not arm a wait. Answer status read only from the
+   state files (`state.py list`, `state.py show`, `state.py notice list`), and send every
+   request to that coordinator with `orca orchestration send --to run:<shared> --type question
+   --subject '<title>' --body '<request>' --json` (`<shared>` from `state.py run`). The list
+   says `truncated: true` or fails → you cannot tell: do the same and tell the user. Bind
+   (Binding below) only when the user says "take over".
 
    **Binding** (on every session start, live worker or not; again only on the user's word):
    1. `state.py run --terminal $ORCA_TERMINAL_HANDLE`, first thing (the watchdog may already
@@ -95,7 +109,7 @@ released after its last task. `events+="released <role> <handle>"` each time.
       the user the code and stop. `error.code` `run_not_found` → step 4. Any other `run-show`
       error: tell the user the code and stop. Never create a new Run silently.
    4. No saved id, or `run_not_found` → `run-create --objective "pipeline coordinator"`, then
-      `state.py run --set <run_id>`.
+      `state.py run --set <run_id> --terminal $ORCA_TERMINAL_HANDLE`.
    5. `coord.py seed --run <shared>`, every Binding. It seeds the scan floor only for a Run
       that has none yet (cutover, or a Run created in step 4), so questions an old session
       already read are not run again. Exit 3 with "already seeded" for this Run is normal; any
@@ -103,7 +117,8 @@ released after its last task. `events+="released <role> <handle>"` each time.
    6. `state.py note show` (pending decisions, recent answers) and `state.py handled open`:
       every message with `started` and no `answered` goes through Recovery (Waiting).
    7. Re-arm watchers for every open mission (`state.py list`, then `state.py show`): stage
-      `pr` with no greptile reviewer started yet → PR older than 5 min: start the greptile
+      `pr` with no greptile reviewer started yet → PR age from `createdAt` in `gh pr view <n>
+      --repo <owner_repo> --json number,url,state,createdAt`; older than 5 min: start the greptile
       reviewer now; else arm `mission_ops.py greptile-delay` with `--seconds` = the time left.
       Stage `pr` or `ready` → arm `mission_ops.py merge-watch`.
    Every "stop" and every "tell the user" in Binding is also a `state.py notice add`.
@@ -164,10 +179,12 @@ released after its last task. `events+="released <role> <handle>"` each time.
    `mission_ops.py push <repo-basename> <id>` (mission branch only); split the body without
    reading it: `mission_ops.py pr-split <repo-basename> <id> --scope <scope>` prints the title
    (it already falls back to `#<TICKET> feat(<scope>): <mission title>` when the first line is
-   empty or longer than 70 characters). Then `gh pr create --repo <owner_repo> --base <base>
-   --head <branch> --title "<printed title>" --body-file <files>/pr-body-rest.md`. On a GitHub "Something went
-   wrong" error, `gh pr list --repo <owner_repo> --head <branch> --state all` first and retry
-   only if it is empty. Record `stages.pr.number`, `stages.pr.url`,
+   empty or longer than 70 characters). Then `mission_ops.py pr-create <repo-basename> <id>`:
+   it runs `gh pr create` with `pr-title.txt` and `pr-body-rest.md` (no shell, so the title
+   needs no quoting) and prints `{"number": N, "url": ...}`. On a GitHub "Something went
+   wrong" error it first looks with `gh pr list --head <branch> --state all` and prints the PR
+   it finds; non-zero exit = no PR: tell the user the error and wait for their word, never
+   retry blind. Record `stages.pr.number`, `stages.pr.url`,
    `note="PR #<n> open; Greptile check in 5 min"`. Then, in one response, arm two background
    commands: the Greptile delay (`mission_ops.py greptile-delay`) and the merge watcher
    (`mission_ops.py merge-watch`; orca-commands.md Watchers). This mission needs no Orca wait until the greptile reviewer starts. The pipeline opens the PR itself: the user's request to run
@@ -232,10 +249,15 @@ user's answer.
 
 **Every "tell the user" is also a notice.** The coordinator terminal may have nobody watching
 it, so each time this skill says "tell the user", also run `state.py notice add --kind <kind>
---mission <id> --line "<the one line>"` (no `--mission` when no mission is involved). This
+--mission <id> --line '<the one line>'` (no `--mission` when no mission is involved). This
 covers dropped messages, Binding failures, `consumer_fenced`, Linear errors and kept files or
 worktrees. The board shows open notices; every status reply lists them; clear one with
 `state.py notice clear <id>` only when an ask or the user says so.
+
+**Free text goes in single quotes.** The text you put in `reply --body`, `notice add --line`,
+`note add`, `send --body` and every `--summary` comes from tickets, asks and workers: write it as
+`'<text>'`, and write each `'` inside it as `'\''`. Double quotes would let `$`, backticks and
+`\` in that text expand in the shell.
 
 ## Plan mode
 
@@ -310,11 +332,14 @@ Then end the turn. On the wake:
    task's output, `state.py notice add --kind wait --line "<code and one line>"`, and follow
    the `consumer_fenced` rule below when the code says so (never rebind on your own).
 2. `coord.py scan --run <shared>` → JSON list of inbox rows above the floor with no `answered`
-   line, oldest first. Route each (Routing). Exit 5: the window was too short (the script has
-   written the notice); run it once more with `--limit 500`. Exit 3 (scan file missing, bad,
+   line, oldest first. Route each (Routing). Exit 5: the window was too short; run it once
+   more with `--limit 500`, and only when that also exits 5, `state.py notice add --kind scan
+   --line 'inbox window short: 500 rows all above the floor'`. Exit 3 (scan file missing, bad,
    or for another Run): notice, tell the user, skip the scan; the next Binding seeds it.
-3. `coord.py advance --run <shared>` moves the floor up as far as every row is `answered`
-   (exit 5: window too short, floor kept; exit 3: as above).
+3. `coord.py advance --run <shared>` moves the floor up as far as every row is `answered`.
+   Exit 5 (window too short, floor kept): the same rule as scan, run it once more with
+   `--limit 500`, and only when that also exits 5, `state.py notice add --kind scan --line
+   'advance window short: floor kept'`. Exit 3: as above.
 4. Arm the wait again. Always, also after a timeout or an empty batch.
 
 **Routing**, for each message, in this order. The message record (from the `check --full`
@@ -325,7 +350,7 @@ batch or a `scan` row) carries `id`, `sequence`, `type`, `from_handle` and `payl
    answered, so a message the scan already handled is not run again when the wait delivers it).
 2. Prints `started` → **Recovery** (below).
 3. Otherwise `state.py handled start <id> --seq <sequence> --type <type> --from <from_handle>
-   --kind outside|mission --summary "<one line>"` **before any action** (`--seq` is the
+   --kind outside|mission --summary '<one line>'` **before any action** (`--seq` is the
    record's `sequence`; exit 3 = refused (no or bad `sequence`, or at or below the floor):
    no action and no notice, leave the message to the scan). Then take the
    Dispatch id from `JSON.parse(message.payload).dispatchId` (never `from_handle`):
@@ -337,13 +362,16 @@ batch or a `scan` row) carries `id`, `sequence`, `type`, `from_handle` and `payl
      A late message from a worker of a done or aborted mission never gets the user's
      authority.
 4. After the action (and the `reply` for an outside ask): `state.py handled answer <id>
-   --summary "<one line>"`. Every message ends `answered`, also those that only got a
+   --summary '<one line>'`. Every message ends `answered`, also those that only got a
    notice; otherwise the floor never moves past it.
 
 **Recovery** (routing step 2, and at Binding for every line `state.py handled open` prints):
 check whether the action happened (e.g. `state.py show`, `state.py notice list`). A
 `kind=mission` line: re-check the mission state, finish the Loop step if it did not happen,
-no reply. A `kind=outside` line: done → reply with the result; not done → do it now, then
+no reply. When that step is a `worker-start`, first run `worker-list --run <shared>
+--include-remote --json` (following `page.nextCursor`): a Dispatch with the expected task
+title whose id is in no mission's `dispatches` was started before the restart; record it
+(`dispatches+=<dispatchId>`) instead of starting another. A `kind=outside` line: done → reply with the result; not done → do it now, then
 reply; cannot tell (free-text action with no trace) → reply "I may have done this before a
 restart; check <what>". Then `handled answer`. A crash between `reply` and `answered` can send a second answer; that is accepted.
 
@@ -354,8 +382,9 @@ Rules:
   `pgrep -f "coord.py wait --run <shared>"`, exit 0 = one is running. Any read you need
   between wakes is `--peek`. Inside a wake the old wait has exited: arm it once, at step 4.
 - **The wait is always armed.** Before any turn ends, a wait is running, whether or not any
-  mission is open or has a live worker. The two exceptions are a Binding failure (no Run)
-  and `consumer_fenced` (another terminal holds the Run): no wait, and a notice.
+  mission is open or has a live worker. The exceptions are a Binding failure (no Run),
+  `consumer_fenced` (another terminal holds the Run), and another live coordinator (Intake,
+  Another coordinator?): no wait, and a notice.
 - **Live worker** = a Dispatch id in an open mission's `dispatches` that is not in its
   `settled` (`state.py show` on each open mission from `state.py list`).
 - **A stop is per mission.** "Stop", "wait for their word" and "end the turn" in the Loop
@@ -382,7 +411,7 @@ Rules:
 An outside ask is a `question` with no `dispatchId`, sent by a tool or another Claude session
 with `orca orchestration send --to run:<shared> --type question`. It is free text: read it
 and do what it asks, as if the user typed it, then `orca orchestration reply --id <id>
---body "<answer>" --json` (Orca adds `Re: <subject>`), then `handled answer`.
+--body '<answer>' --json` (Orca adds `Re: <subject>`), then `handled answer`.
 
 - **Same wake.** Every outside ask is answered in the wake that routed it. A long request
   ("start X and tell me when the spec is done") gets an immediate reply ("started X; ask for
@@ -398,7 +427,7 @@ and do what it asks, as if the user typed it, then `orca orchestration reply --i
   or decline, implementer `failed`, `escalation`, an existing plan-mode folder, or Abort. Act on
   it exactly as on the user's chat reply. An ask is also the user's approval for a push, a PR
   and a Linear or GitHub call, the same way "run this mission" is.
-- When an ask leads to a decision or a pending item, `state.py note add "<one line>"` before
+- When an ask leads to a decision or a pending item, `state.py note add '<one line>'` before
   `handled answer`.
 - Never answer an outside ask with "Decide yourself…"; that is for mission workers only.
 

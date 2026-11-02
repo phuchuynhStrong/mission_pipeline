@@ -5,6 +5,9 @@ Resolve the executable as the `orchestration` skill says (`orca` on this machine
 
 ```text
 orca status --json
+# Another coordinator? (SKILL.md step 1): read coordinator.json `terminal` with the Read tool, then
+orca terminal list --limit 1000 --json                  # lists it and it is not $ORCA_TERMINAL_HANDLE -> do not bind; truncated: true = cannot tell
+orca orchestration send --to run:<shared> --type question --subject '<title>' --body '<request>' --json   # read-only session: every request goes to the live coordinator
 # Binding: every session start, every mission shares this Run (<shared>); SKILL.md step 1
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py run --terminal $ORCA_TERMINAL_HANDLE   # first thing: save this terminal
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py run                       # -> saved id or empty line; exit 3 = bad coordinator.json
@@ -12,7 +15,7 @@ orca orchestration run-current --json                   # already bound to the s
 orca orchestration run-show --id <saved_id> --json      # error.code run_not_found -> create below
 orca orchestration run-use --id <saved_id> --json       # found: bind; any error: tell the user, stop
 orca orchestration run-create --objective "pipeline coordinator" --json     # only: no saved id or run_not_found
-python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py run --set <run_id>        # save it for restarts
+python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py run --set <run_id> --terminal $ORCA_TERMINAL_HANDLE   # save it for restarts
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/coord.py seed --run <shared>       # every Binding; exit 3 "already seeded" = normal; other failure: notice
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py note show                 # pending decisions, recent answers
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py handled open              # started, not answered -> Recovery
@@ -21,7 +24,8 @@ python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py handled open              # st
 # intake: the mission's repo must be registered; owner/repo from its origin
 orca repo list --json
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/mission_ops.py owner-repo <repo>   # <repo> = absolute path from repo list -> owner/repo; exit 3 = no GitHub origin
-python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py file write <slug> <id> mission.md   # text on stdin; never the Write tool
+python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py file write <slug> <id> mission.md <<'MISSION_EOF'
+# text on stdin through that quoted heredoc, closed by a MISSION_EOF line; never the Write tool
 
 # readers, senior, planner: the mission's repo, never `current` (the coordinator's own folder)
 orca orchestration worker-start --spec "<spec text>" --task-title "<role> <id>" \
@@ -64,28 +68,29 @@ orca orchestration worker-start --spec "..." --task-title "greptile <id> PR <n>"
 pgrep -f "coord.py wait --run <shared>"                                    # exit 0 = a wait is running: do not arm another
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/coord.py wait --run <shared> --out <scratchpad>/pipeline/inbox.json   # heartbeat, then check --wait ... --full --json; non-zero: nothing written
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/coord.py scan --run <shared>      # after every wake: inbox --limit 100 --full --json -> unanswered rows above the floor; exit 5 = window short
-python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/coord.py advance --run <shared>   # after routing them: move the floor up
+python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/coord.py advance --run <shared>   # after routing them: move the floor up; exit 5 = window short, floor kept
+python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/coord.py scan --run <shared> --limit 500      # scan or advance exit 5: once more; exit 5 again -> notice add --kind scan
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py handled get <message_id> --seq <sequence>   # answered (also at/below the floor) -> skip | started -> Recovery | none
-python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py handled start <message_id> --seq <sequence> --type <type> --from <from_handle> --kind outside --summary "<line>"   # before any action; --kind mission for a Dispatch message; exit 3 = refused: no action, no notice
-python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py handled answer <message_id> --summary "<line>"   # after the action and the reply
-python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py notice add --kind <kind> --mission <id> --line "<line>"   # every "tell the user"
+python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py handled start <message_id> --seq <sequence> --type <type> --from <from_handle> --kind outside --summary '<line>'   # before any action; --kind mission for a Dispatch message; exit 3 = refused: no action, no notice
+python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py handled answer <message_id> --summary '<line>'   # after the action and the reply
+python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py notice add --kind <kind> --mission <id> --line '<line>'   # every "tell the user"; free text in single quotes, ' written as '\''
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py notice list              # open notices, for every status reply
-python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py note add "<line>"         # a decision or pending item from an outside ask
+python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py note add '<line>'         # a decision or pending item from an outside ask
 orca orchestration check --run <shared> --peek --json                      # read-only look between wakes
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/state.py owner <dispatchId>         # dispatchId = JSON.parse(message.payload).dispatchId (payload is a JSON string; never from_handle)
                                 # exit 0 "<slug> <id> live|settled"; 3 no owner; 4 two owners; other = failed
-orca orchestration reply --id <message_id> --body "<answer>" --json
+orca orchestration reply --id <message_id> --body '<answer>' --json
 orca orchestration worker-show --dispatch <dispatch_id> --json             # -> terminal handle; per-Dispatch cleanup over the mission's dispatches
 orca orchestration worker-release --dispatch <dispatch_id> --json        # right after its worker_done
 orca terminal close --terminal <handle> --json                            # when release says `retained` (user typed there)
-orca orchestration worker-list --run <shared> --include-remote --json     # three empty waits only; rows carry dispatchId; page with --cursor
+orca orchestration worker-list --run <shared> --include-remote --json     # three empty waits, and Recovery before re-doing a worker-start; rows carry dispatchId; page with --cursor
 
 # PR (stage `pr`); <base> is the mission's base_branch, <owner_repo> from the state file; cwd never matters
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/mission_ops.py push <slug> <id>                     # git push -u origin <branch>, mission branch only
 python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/mission_ops.py pr-split <slug> <id> --scope <scope>   # -> title; writes <files>/pr-title.txt + pr-body-rest.md
-gh pr create --repo <owner_repo> --base <base> --head <branch> --title "<printed title>" --body-file <files>/pr-body-rest.md
-#   on a GraphQL "Something went wrong": `gh pr list --repo <owner_repo> --head <branch> --state all --json number,url` first; retry only if empty
-gh pr view <n> --repo <owner_repo> --json number,url,state,headRefOid,mergedAt,mergeCommit,closedAt
+python3 -I ${CLAUDE_PLUGIN_ROOT}/scripts/mission_ops.py pr-create <slug> <id>               # gh pr create from pr-title.txt + pr-body-rest.md -> {"number","url"}
+#   on a GraphQL "Something went wrong" it runs `gh pr list --repo <owner_repo> --head <branch> --state all --json number,url` and prints a found PR; non-zero = no PR
+gh pr view <n> --repo <owner_repo> --json number,url,state,createdAt,headRefOid,mergedAt,mergeCommit,closedAt   # Binding step 7: PR age from createdAt
 
 # close (stage `ready` -> done)
 gh pr list --repo <owner_repo> --head <branch> --state merged --json number,mergeCommit,mergedAt
