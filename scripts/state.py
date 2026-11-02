@@ -187,6 +187,17 @@ def read_coord():
 
 def cmd_run(a):
     data = read_coord()
+    if a.set_id is None and a.terminal is not None:
+        rid = data.get("run_id") if isinstance(data, dict) else None
+        if not isinstance(rid, str) or not rid:
+            print(f"bad coordinator file (no run_id): {COORD}", file=sys.stderr)
+            sys.exit(3)
+        out = dict(data)
+        out["terminal"] = a.terminal
+        out["updated"] = now()
+        write_json(COORD, out)
+        print(rid)
+        return
     if a.set_id is None:
         if data is None:
             print("")
@@ -200,8 +211,13 @@ def cmd_run(a):
     if not a.set_id:
         print("refused: empty run_id", file=sys.stderr)
         sys.exit(3)
-    created = data.get("created") if isinstance(data, dict) else None
-    write_json(COORD, {"run_id": a.set_id, "created": created or now(), "updated": now()})
+    out = dict(data or {}) if isinstance(data, dict) or data is None else {}
+    out["run_id"] = a.set_id
+    out["created"] = out.get("created") or now()
+    out["updated"] = now()
+    if a.terminal is not None:
+        out["terminal"] = a.terminal
+    write_json(COORD, out)
     print(a.set_id)
 
 
@@ -250,7 +266,7 @@ def main():
     for name, fn in (("show", cmd_show), ("path", cmd_path)):
         c = sub.add_parser(name); c.add_argument("slug"); c.add_argument("id"); c.set_defaults(fn=fn)
     l = sub.add_parser("list"); l.add_argument("slug", nargs="?"); l.add_argument("--all", action="store_true"); l.set_defaults(fn=cmd_list)
-    r = sub.add_parser("run"); r.add_argument("--set", dest="set_id"); r.set_defaults(fn=cmd_run)
+    r = sub.add_parser("run"); r.add_argument("--set", dest="set_id"); r.add_argument("--terminal", dest="terminal"); r.set_defaults(fn=cmd_run)
     o = sub.add_parser("owner"); o.add_argument("dispatch"); o.set_defaults(fn=cmd_owner)
     a = p.parse_args()
     a.fn(a)

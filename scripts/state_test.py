@@ -87,6 +87,22 @@ class RunTest(StateCase):
         self.assertEqual(r.returncode, 3)
         self.assertFalse(os.path.exists(self.coord))
 
+    def test_run_set_keeps_other_fields(self):
+        self.write(self.coord, json.dumps({"run_id": "run_a", "created": "c", "terminal": "term_1", "x": 1}))
+        self.assertEqual(self.state("run", "--set", "run_b").returncode, 0)
+        d = json.loads(self.read(self.coord))
+        self.assertEqual((d["run_id"], d["terminal"], d["x"], d["created"]), ("run_b", "term_1", 1, "c"))
+
+    def test_run_terminal_sets_field(self):
+        self.state("run", "--set", "run_a")
+        self.assertEqual(self.state("run", "--terminal", "term_9").returncode, 0)
+        d = json.loads(self.read(self.coord))
+        self.assertEqual((d["terminal"], d["run_id"]), ("term_9", "run_a"))
+
+    def test_run_terminal_without_file_exit3(self):
+        self.assertEqual(self.state("run", "--terminal", "term_9").returncode, 3)
+        self.assertFalse(os.path.exists(self.coord))
+
 
 class NewListTest(StateCase):
     def test_list_ignores_coordinator_file(self):
