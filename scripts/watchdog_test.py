@@ -180,6 +180,37 @@ class RunCase(unittest.TestCase):
         self.assertEqual(len(self.notices()), 1)
         self.assertFalse(any(a[:2] == ["agent", "launch"] for a in self.argv()))
 
+    def open_notices(self):
+        out = {}
+        for e in self.notices():
+            if "kind" in e:
+                out[e["id"]] = e
+            elif e.get("cleared") and e["id"] in out:
+                out[e["id"]] = {**out[e["id"]], "cleared": True}
+        return [e for e in out.values() if not e["cleared"]]
+
+    def test_ok_clears_watchdog_notices_only(self):
+        import time
+        with open(os.path.join(self.root, "notices.jsonl"), "w") as f:
+            for nid, kind in (("n_1", "watchdog"), ("n_2", "wait"), ("n_3", "watchdog")):
+                f.write(json.dumps({"id": nid, "at": "", "kind": kind, "mission": "",
+                                    "line": "x", "cleared": False}) + "\n")
+        self.wjson("heartbeat", {"at": int(time.time() * 1000), "iso": "", "terminal": "term_a"})
+        r = self.wd("run", "--workspace", "/ws")
+        self.assertEqual((r.returncode, r.stdout.strip()), (0, "ok"), r.stderr)
+        self.assertEqual([n["id"] for n in self.open_notices()], ["n_2"])
+        # a second ok run adds no more clear lines
+        n = len(self.notices())
+        self.wd("run", "--workspace", "/ws")
+        self.assertEqual(len(self.notices()), n)
+
+    def test_new_reason_replaces_old_watchdog_notice(self):
+        self.set("truncated", "1")  # partial terminal list -> orca not answering
+        self.assertEqual(self.wd("run", "--workspace", "/ws").returncode, 0)
+        os.remove(os.path.join(self.home, "truncated"))  # terminal alive, no heartbeat
+        self.assertEqual(self.wd("run", "--workspace", "/ws").returncode, 0)
+        self.assertEqual([n["line"] for n in self.open_notices()], ["coordinator: not waiting"])
+
     def test_run_current_failure_is_not_fenced(self):
         import time
         self.set("rc_fail", "1")

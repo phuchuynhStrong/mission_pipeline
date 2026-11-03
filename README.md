@@ -67,7 +67,8 @@ plugin folder; `<shared>` comes from `python3 -I <root>/scripts/state.py run`.
    ```
 
 5. When the coordinator is live but not waiting (fenced, a permission prompt, Binding
-   failed), the watchdog writes a notice to the board and does not launch. After two failed
+   failed), the watchdog writes a notice to the board and does not launch. A new watchdog
+   notice replaces the older open ones, and the next ok check clears them. After two failed
    launches in a row it pauses. Fix the cause, then:
 
    ```

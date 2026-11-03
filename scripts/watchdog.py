@@ -1,8 +1,8 @@
 """Coordinator watchdog. launchd runs `watchdog.py run --workspace <ws>` every minute.
 
 It relaunches the coordinator Claude session when its Orca terminal is gone, and only
-writes a board notice when the terminal is alive but not working. It never types into
-any terminal.
+writes a board notice when the terminal is alive but not working. A new notice replaces
+its open watchdog notices; an ok check clears them. It never types into any terminal.
 
 Usage:
   watchdog.py run --workspace <ws>
@@ -96,10 +96,23 @@ def load_wd():
     return wd
 
 
+def clear_own_notices():
+    """Clear every open notice of kind watchdog. Never touches other kinds."""
+    try:
+        known = state.read_notices()
+    except SystemExit:  # corrupt notices file: leave it for notice_add or the user to report
+        return
+    for nid, e in known.items():
+        if e.get("kind") == "watchdog" and not e.get("cleared"):
+            state.append_notice({"id": nid, "cleared": True, "at": state.now()})
+
+
 def notice(wd, reason):
-    """Write a notice only when the reason differs from the last one stored."""
+    """Write a notice only when the reason differs from the last one stored.
+    The new notice replaces the open watchdog notices before it."""
     if wd.get("last_notice") == reason:
         return
+    clear_own_notices()
     state.notice_add("watchdog", f"coordinator: {reason}")
     wd["last_notice"] = reason
 
@@ -187,6 +200,7 @@ def cmd_run(a):
     elif action == "notice":
         notice(wd, reason)
     elif action == "ok":
+        clear_own_notices()
         wd["last_notice"] = ""
     state.write_json(WATCHDOG, wd)
     print(f"{action} {reason}".strip())
