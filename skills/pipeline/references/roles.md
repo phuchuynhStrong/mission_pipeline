@@ -157,9 +157,11 @@ Observable acceptance, one of:
   --report-path {review_path}; {pr_body_path} exists.
 - FIX findings and no DECISION: worker_done --outcome failed, body starts
   `FIX: <n> findings — <one line>`, --report-path {review_path}.
-- any DECISION finding: worker_done --outcome failed, body starts
-  `NEEDS_USER: <one line>`, --report-path {review_path}; then stay idle in this terminal so the
-  user can read and discuss the findings here.
+- any DECISION finding: first write the fixes page with the illustrating-fix-proposals skill
+  (one card per DECISION or FIX finding) at {review_path} with `.md` replaced by `-fixes.html`,
+  and `open` it. Then worker_done --outcome failed, body starts `NEEDS_USER: <one line>`,
+  --report-path {review_path}; then print the page path in this terminal, ask which fixes to
+  apply, and stay idle in this terminal so the user can read and discuss the findings here.
 ```
 
 ## greptile reviewer
@@ -186,7 +188,10 @@ Observable acceptance, one of:
 - rating acceptable and no VERIFIED comment needs a code change (or Greptile never ran):
   worker_done --outcome succeeded, body starts `GREPTILE_OK: <score or none> — <one line>`,
   --report-path {greptile_path}.
-- otherwise: worker_done --outcome failed, body starts
-  `NEEDS_USER: <score> — <one line on what to fix>`, --report-path {greptile_path}; then stay
-  idle in this terminal so the user can read and discuss the findings here.
+- otherwise: first write the fixes page with the illustrating-fix-proposals skill (one card
+  per VERIFIED comment that needs a code change) at {greptile_path} with `.md` replaced by
+  `-fixes.html`, and `open` it. Then worker_done --outcome failed, body starts
+  `NEEDS_USER: <score> — <one line on what to fix>`, --report-path {greptile_path}; then print
+  the page path in this terminal, ask which fixes to apply, and stay idle in this terminal so
+  the user can read and discuss the findings here.
 ```

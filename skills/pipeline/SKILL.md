@@ -53,6 +53,7 @@ released after its last task. `events+="released <role> <handle>"` each time.
 | mission text, readings | `<files>/mission.md`, `<files>/readings/<angle>.md` |
 | review reports | `<files>/review.md`, `<files>/review-2.md`, ... (one per round) |
 | PR body, Greptile report | `<files>/pr-body.md` (written by the reviewer), its split `<files>/pr-title.txt` + `<files>/pr-body-rest.md` (`mission_ops.py pr-split`), `<files>/greptile-review.md` |
+| fixes pages | `<files>/review-fixes.html`, `<files>/review-N-fixes.html`, `<files>/greptile-review-fixes.html`: written and opened by the reviewer or greptile reviewer on `NEEDS_USER` (skill illustrating-fix-proposals); you pass the path on, you do not read it |
 | inbox | `<scratchpad>/pipeline/inbox.json`: one per session, shared by every mission, written by `coord.py wait --out` |
 | watcher outputs | `<files>/pr.json`, `<files>/pr-final.json` |
 | saved Run | `~/.claude/pipeline/coordinator.json`, one per machine, read and written only with `state.py run` (`--set <run_id>`, `--terminal <handle>`) |
@@ -170,8 +171,9 @@ released after its last task. `events+="released <role> <handle>"` each time.
      previous reports listed). At most **2 fix rounds**: a third `FIX:` is handled as
      `NEEDS_USER` with `note="review: 2 fix rounds did not converge"`.
    - `NEEDS_USER:` → `stages.review.status=waiting_user attention.terminal=<handle>
-     attention.reason="<reason>"`, keep the reviewer's terminal, tell the user its handle and the
-     one-line reason, end the turn. The user decides; you do not dispatch a fix unasked. When
+     attention.reason="<reason>"`, keep the reviewer's terminal, tell the user its handle, the
+     one-line reason and the fixes page (the report path with `.md` → `-fixes.html`; the
+     reviewer has opened it), end the turn. The user decides; you do not dispatch a fix unasked. When
      the user gives their decisions (in chat, or relayed by the reviewer as a `status` message),
      release and close the reviewer, start a fix-round implementer with the decisions, then
      re-review as above (this round does not count toward the 2-round cap).
@@ -195,7 +197,8 @@ released after its last task. `events+="released <role> <handle>"` each time.
      stages.pr.status=done note="ready: PR #<n> open, Greptile <score>; closes on merge"`.
      `NEEDS_USER:` → `stages.pr.status=waiting_user attention.terminal=<handle>
      attention.reason="Greptile <score>: <line>"`, keep its terminal, tell the user the handle,
-     the score and the one line. The user decides whether to fix. On their word: release and close the greptile
+     the score, the one line and the fixes page `<files>/greptile-review-fixes.html` (the
+     greptile reviewer has opened it). The user decides whether to fix. On their word: release and close the greptile
      reviewer's terminal, dispatch a fix-round implementer with the Greptile report, on
      `succeeded` release it and `mission_ops.py push <repo-basename> <id>` (same PR), then `attention=null
      stage=ready stages.pr.status=done`. If the user declines: release and close the greptile
