@@ -206,6 +206,7 @@ def cmd_done(a):
 
 
 def cmd_count(a):
+    # read, change, save with no lock: the coordinator is the one writer of a mission file, as for `set`
     data = load(a.slug, a.id)
     counters = data.get("counters")
     if not isinstance(counters, dict):

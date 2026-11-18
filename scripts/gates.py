@@ -33,6 +33,8 @@ NEVER_SHOWN_VERDICT = "NEEDS_USER"
 SPEC_SECTIONS = ("Goal", "Design")
 
 CITE = re.compile(r"\[([A-Za-z][A-Za-z0-9_.-]*):([^\]\s:]+):(\d+)(?:-(\d+))?\]")
+LOOSE_CITE = re.compile(r"\[([A-Za-z][A-Za-z0-9_.-]*):[^\]\n]*\]")  # starts like a citation; must then be a full one
+CASE_HEAD = re.compile(r"^### (VC-\d+)(?:\s+(.*))?$")
 FINDING = re.compile(r"^- (RQ-\d+) \| ([^|]+?) \| (.+?) \| (.+)$")
 RESOLUTION = re.compile(r"^- (RQ-\d+):\s*\S", re.M)
 CASES = re.compile(r"<!-- cases:start -->\n(.*?)<!-- cases:end -->", re.S)
@@ -49,16 +51,20 @@ def read_text(path):
     try:
         with open(path) as f:
             return f.read()
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return None
 
 
 def lines_at_head(repo, path, cache):
-    """Line count of <path> at the repo's HEAD, or None when HEAD does not hold it."""
+    """Line count of the file <path> at the repo's HEAD, or None when HEAD holds no file there."""
     key = (repo, path)
     if key not in cache:
-        r = subprocess.run(["git", "-C", repo, "show", f"HEAD:{path}"], capture_output=True)
-        cache[key] = len(r.stdout.splitlines()) if r.returncode == 0 else None
+        kind = subprocess.run(["git", "-C", repo, "cat-file", "-t", f"HEAD:{path}"], capture_output=True, text=True)
+        if kind.returncode != 0 or kind.stdout.strip() != "blob":  # a folder is a tree, not a file
+            cache[key] = None
+        else:
+            r = subprocess.run(["git", "-C", repo, "show", f"HEAD:{path}"], capture_output=True)
+            cache[key] = len(r.stdout.splitlines()) if r.returncode == 0 else None
     return cache[key]
 
 
@@ -77,15 +83,19 @@ def parse_findings(text):
 
 
 def parse_cases(text):
-    """(block text or None, cases, no-case reasons) of a spec."""
+    """(block text or None, cases, no-case reasons, bad heading lines) of a spec."""
     hit = CASES.search(text)
     if not hit:
-        return None, [], set()
-    block, cases, reasons, cur = hit.group(1), [], set(), None
+        return None, [], set(), []
+    block, cases, reasons, bad_heads, cur = hit.group(1), [], set(), [], None
     for line in block.splitlines():
-        head = re.match(r"^### (VC-\d+)\b\s*(.*)$", line)
-        if head:
-            cur = {"id": head.group(1), "title": head.group(2).strip(), "family": "", "steps": [],
+        if line.startswith("### "):
+            head = CASE_HEAD.match(line)
+            if not head:  # e.g. `### VC-02a`: not a case; its lines must not join the case before it
+                bad_heads.append(line)
+                cur = None
+                continue
+            cur = {"id": head.group(1), "title": (head.group(2) or "").strip(), "family": "", "steps": [],
                    "bad_steps": [], "expected": ""}
             cases.append(cur)
             continue
@@ -108,7 +118,7 @@ def parse_cases(text):
             cur["steps"].append(line)
         elif line.startswith("- "):
             cur["bad_steps"].append(line)
-    return block, cases, reasons
+    return block, cases, reasons, bad_heads
 
 
 def cases_hash(block):
@@ -141,6 +151,9 @@ def gate_read(paths, repos, findings_path):
         if not re.search(r"^## Could not verify\s*$", text, re.M):
             errs.append(("READ-NO-UNVERIFIED", f"{p}: no heading '## Could not verify'"))
         cites = {c.group(0): c.groups() for c in CITE.finditer(text)}
+        for loose in LOOSE_CITE.finditer(text):
+            if loose.group(1) in repos and loose.group(0) not in cites:
+                errs.append(("READ-CITE-FORMAT", f"{p}: {loose.group(0)}: want [<repo>:<path>:<line>] or [<repo>:<path>:<from>-<to>]"))
         if not cites:
             errs.append(("READ-NO-CITATION", f"{p}: no [repo:path:line] citation"))
         for tag, (key, path, first, last) in cites.items():
@@ -169,9 +182,11 @@ def gate_spec(spec_path, findings_path):
     for name in SPEC_SECTIONS:
         if not re.search(rf"^## {name}\b", text, re.M):
             errs.append(("SPEC-SECTION-MISSING", f"no section '## {name}'"))
-    block, cases, reasons = parse_cases(text)
+    block, cases, reasons, bad_heads = parse_cases(text)
     if not cases:
         errs.append(("SPEC-NO-CASES", "no case between <!-- cases:start --> and <!-- cases:end -->"))
+    for line in bad_heads:
+        errs.append(("SPEC-CASE-HEADING", f"bad case heading, want '### VC-<nn> <title>': {line}"))
     seen = set()
     for c in cases:
         if c["id"] in seen:
@@ -206,8 +221,12 @@ def gate_plan(plan_path, spec_path, frozen_hash):
     if text is None:
         return [("PLAN-FILE-MISSING", f"{plan_path}: cannot be read")]
     errs = []
-    block, cases, _ = parse_cases(read_text(spec_path) or "")
-    if frozen_hash and (block is None or cases_hash(block) != frozen_hash):
+    block, cases = parse_cases(read_text(spec_path) or "")[:2]
+    if not cases:
+        errs.append(("PLAN-NO-CASES", "the spec has no case"))
+    if not frozen_hash:
+        errs.append(("PLAN-NOT-FROZEN", "the cases are not frozen yet: run freeze-cases after the spec gate"))
+    elif block is None or cases_hash(block) != frozen_hash:
         errs.append(("PLAN-CASES-CHANGED", "the cases block of the spec changed after it was frozen"))
     plain = "\n".join(TAG.sub("", line) for line in text.splitlines())  # an HTML plan: tags off, comments kept
     hit = CASE_TASKS.search(plain)
@@ -261,17 +280,23 @@ def gate_verify(report_path, spec_path, frozen_hash, worktree, defects_path, fil
     try:
         report = json.loads(raw)
         rows = report["rows"]
-        if not isinstance(report, dict) or not isinstance(rows, list) or not all(isinstance(r, dict) for r in rows):
+        if not isinstance(report, dict) or not isinstance(rows, list) or not all(
+                isinstance(r, dict) and isinstance(r.get("case"), str) for r in rows):
             raise ValueError("rows")
     except (ValueError, KeyError, TypeError):
-        return [("VERIFY-BAD-JSON", f"{report_path}: want an object with a list 'rows' of objects")]
+        return [("VERIFY-BAD-JSON", f"{report_path}: want an object with a list 'rows' of objects, each with a string 'case'")]
     errs = []
-    block, cases, _ = parse_cases(read_text(spec_path) or "")
-    if frozen_hash:
+    block, cases = parse_cases(read_text(spec_path) or "")[:2]
+    if not cases:
+        errs.append(("VERIFY-NO-CASES", "the spec has no case"))
+    if not frozen_hash:
+        errs.append(("VERIFY-NOT-FROZEN", "the cases are not frozen: run freeze-cases after the spec gate"))
+    else:
         if block is None or cases_hash(block) != frozen_hash:
             errs.append(("VERIFY-CASES-CHANGED", "the cases block of the spec changed after it was frozen"))
         if report.get("cases_hash") != frozen_hash:
             errs.append(("VERIFY-CASES-CHANGED", "the report's cases_hash is not the frozen one"))
+    root = os.path.realpath(files_dir)
     if worktree:
         head = subprocess.run(["git", "-C", worktree, "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
         if not head or report.get("commit") != head:
@@ -300,8 +325,9 @@ def gate_verify(report_path, spec_path, frozen_hash, worktree, defects_path, fil
                 kind, path = (e.get("kind"), e.get("path")) if isinstance(e, dict) else (None, None)
                 if kind not in EVIDENCE_KINDS:
                     errs.append(("VERIFY-EVIDENCE-KIND", f"{cid}: evidence kind '{kind}' is not one of {list(EVIDENCE_KINDS)}"))
-                if not path or not os.path.exists(os.path.join(files_dir, path)):
-                    errs.append(("VERIFY-EVIDENCE-MISSING", f"{cid}: evidence file {path} does not exist"))
+                real = os.path.realpath(os.path.join(root, path)) if isinstance(path, str) and path else ""
+                if not real.startswith(root + os.sep) or not os.path.isfile(real):
+                    errs.append(("VERIFY-EVIDENCE-MISSING", f"{cid}: evidence {path} is not a file under the mission's files folder"))
     for cid in ids:
         if cid not in seen:
             errs.append(("VERIFY-CASE-MISSING", f"{cid}: no row"))
@@ -311,6 +337,7 @@ def gate_verify(report_path, spec_path, frozen_hash, worktree, defects_path, fil
     word, computed = report.get("verdict"), computed_verdict(rows, cases, defects)
     if word not in VERDICTS:
         errs.append(("VERIFY-VERDICT-INVALID", f"verdict '{word}' is not one of {list(VERDICTS)}"))
-    elif word in ("VERIFIED", "FIX") and word != computed:
+    elif (word in ("VERIFIED", "FIX") and word != computed) or (word == "BLOCKED" and computed == "FIX"):
+        # NEEDS_USER is always allowed: a case that looks wrong is the owner's call, whatever the rows say
         errs.append(("VERIFY-VERDICT-MISMATCH", f"the report says {word}, the rows give {computed}"))
     return errs

@@ -531,6 +531,24 @@ class VerificationLoopTest(StateCase):
         self.assertEqual(sorted(l[:8] for l in lines), sorted(f"- row {i} " for i in range(8)))
         self.assertTrue(all(len(l) == 5008 for l in lines))
 
+    def test_file_append_waits_for_the_lock(self):
+        import fcntl, time
+        self.assertEqual(self.append("- first").returncode, 0)
+        path = os.path.join(self.root, "files", "app", "m1", "found-defects.md")
+        with open(path, "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            p = subprocess.Popen([sys.executable, "-I", STATE, "file", "append", "app", "m1", "found-defects.md"],
+                                 env={**os.environ, "HOME": self.home}, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+            p.stdin.write("- second")
+            p.stdin.close()
+            time.sleep(1.0)
+            self.assertIsNone(p.poll())  # still waiting: the write is behind the lock
+            self.assertEqual(self.read(path), "- first\n")
+            fcntl.flock(held, fcntl.LOCK_UN)
+        self.assertEqual(p.wait(), 0)
+        p.stdout.close()
+        self.assertEqual(self.read(path), "- first\n- second\n")
+
     def test_count_stops_over_the_limit(self):
         self.new()
         r = self.state("count", "app", "m1", "spec_returns")

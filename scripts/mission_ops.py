@@ -320,17 +320,21 @@ def gate_repos(a, m):
 def cmd_gate(a, m):
     d = files_dir(a)
     findings, frozen = os.path.join(d, "requirement-findings.md"), m.get("cases_hash") or ""
-    if a.stage == "read":
-        errs = gates.gate_read(list(stage(m, "read", "paths") or []), gate_repos(a, m), findings)
-    elif a.stage == "spec":
-        errs = gates.gate_spec(stage(m, "spec", "path"), findings)
-    elif a.stage == "plan":
-        errs = gates.gate_plan(stage(m, "plan", "path"), stage(m, "spec", "path"), frozen)
-    elif a.stage == "verify":
-        errs = gates.gate_verify(os.path.join(d, "verify.json"), stage(m, "spec", "path"), frozen,
-                                 stage(m, "worktree", "path"), os.path.join(d, "found-defects.md"), d)
-    else:
+    if a.stage not in ("read", "spec", "plan", "verify"):
         raise Refused(f"no gate for stage {a.stage}")
+    repos = gate_repos(a, m)
+    try:
+        if a.stage == "read":
+            errs = gates.gate_read(list(stage(m, "read", "paths") or []), repos, findings)
+        elif a.stage == "spec":
+            errs = gates.gate_spec(stage(m, "spec", "path"), findings)
+        elif a.stage == "plan":
+            errs = gates.gate_plan(stage(m, "plan", "path"), stage(m, "spec", "path"), frozen)
+        else:
+            errs = gates.gate_verify(os.path.join(d, "verify.json"), stage(m, "spec", "path"), frozen,
+                                     stage(m, "worktree", "path"), os.path.join(d, "found-defects.md"), d)
+    except Exception as e:  # a gate that breaks is not a gate that failed: exit 3, never exit 1 with no line
+        raise Refused(f"gate {a.stage} broke: {type(e).__name__}: {e}")
     out = os.path.join(d, f"gate-{a.stage}.md")
     if not errs:
         if os.path.exists(out):  # the error list of an earlier, failed run of this gate
@@ -345,9 +349,9 @@ def cmd_gate(a, m):
 
 
 def cmd_freeze_cases(a, m):
-    block = gates.parse_cases(gates.read_text(stage(m, "spec", "path")) or "")[0]
-    if block is None:
-        raise Refused("the spec has no cases block")
+    block, cases = gates.parse_cases(gates.read_text(stage(m, "spec", "path")) or "")[:2]
+    if block is None or not cases:
+        raise Refused("the spec has no case in a cases block")
     m["cases_hash"] = gates.cases_hash(block)
     state.save(a.slug, a.id, m)
     print(m["cases_hash"])
@@ -380,10 +384,10 @@ def patterns_repeat(a):
         except ValueError:
             raise Refused(f"bad file: {p}")
         for key, missions in hits.items():
-            if key not in noticed:
+            if key not in noticed:  # one writer (the coordinator); a crash here can repeat a notice, never lose one
                 state.notice_add("pattern", f"repeat pattern {key}: {', '.join(missions)}")
                 noticed.append(key)
-        state.write_json(p, noticed)
+                state.write_json(p, noticed)
     return 0
 
 

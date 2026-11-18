@@ -111,6 +111,21 @@ class ReadGateTest(GateCase):
         errs = self.read("[app:lib/a.dart:4] [app:lib/a.dart:2-9] [app:lib/a.dart:3-2] [app:lib/a.dart:0]\n## Could not verify\n")
         self.assertEqual([c for c, _ in errs], ["READ-CITE-LINE"] * 4)
 
+    def test_a_folder_is_not_a_file(self):
+        self.assertEqual(codes(self.read("[app:lib:1]\n## Could not verify\n")), ["READ-CITE-MISSING"])
+
+    def test_a_bracket_that_starts_like_a_citation_must_be_one(self):
+        errs = self.read("[app:lib/a.dart:1] [app:lib:a.dart:3] [app:lib/a file.dart:1] [app:lib/a.dart]\n## Could not verify\n")
+        self.assertEqual([c for c, _ in errs], ["READ-CITE-FORMAT"] * 3)
+
+    def test_a_file_that_is_not_text(self):
+        p = os.path.join(self.files, "readings", "bin.md")
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "wb") as f:
+            f.write(b"\xff\xfe\x00bad")
+        errs = gates.gate_read([p], {"app": self.repo}, self.f("requirement-findings.md", ""))
+        self.assertEqual(codes(errs), ["READ-FILE-MISSING"])
+
     def test_other_brackets_are_not_citations(self):
         errs = self.read("[code: x] [1] [link](http://a) [app:lib/a.dart:1]\n## Could not verify\n")
         self.assertEqual(errs, [])
@@ -146,6 +161,13 @@ class SpecGateTest(GateCase):
                    .replace("expected: a retry button shows\n", "").replace("### VC-02", "### VC-01")
         self.assertEqual(codes(self.spec(text)),
                          ["SPEC-CASE-DUP", "SPEC-CASE-EXPECTED", "SPEC-CASE-FAMILY", "SPEC-CASE-STEP"])
+
+    def test_a_bad_heading_does_not_join_the_case_before_it(self):
+        text = SPEC.replace("### VC-02 The server is down", "### VC-02a The server is down")
+        errs = self.spec(text)
+        self.assertEqual(codes(errs), ["SPEC-CASE-HEADING", "SPEC-NO-ERROR-CASE"])
+        cases = gates.parse_cases(text)[1]
+        self.assertEqual([(c["id"], c["family"], len(c["steps"])) for c in cases], [("VC-01", "main", 2)])
 
     def test_case_with_no_steps(self):
         text = SPEC.replace("- [api] create a job\n- [mobile] open the job\n", "")
@@ -195,8 +217,11 @@ class PlanGateTest(GateCase):
     def test_cases_changed_after_the_freeze(self):
         self.assertEqual(codes(self.plan(spec=SPEC.replace("retry button", "retry link"))), ["PLAN-CASES-CHANGED"])
 
-    def test_not_frozen_yet_is_not_an_error(self):
-        self.assertEqual(self.plan(frozen=""), [])
+    def test_not_frozen_and_no_cases_fail(self):
+        self.assertEqual(codes(gates.gate_plan(self.f("plan.md", PLAN), self.f("spec.md", SPEC), "")), ["PLAN-NOT-FROZEN"])
+        errs = gates.gate_plan(self.f("plan.md", "tier: none\n<!-- case-tasks:start -->\n<!-- case-tasks:end -->\n"),
+                               self.f("spec.md", "# Spec\n"), "")
+        self.assertEqual(codes(errs), ["PLAN-NO-CASES", "PLAN-NOT-FROZEN"])
 
 
 class VerifyGateTest(GateCase):
@@ -231,6 +256,33 @@ class VerifyGateTest(GateCase):
                          ["VERIFY-NO-REPORT"])
         self.assertEqual(codes(self.verify("{")), ["VERIFY-BAD-JSON"])
         self.assertEqual(codes(self.verify('{"rows": [1]}')), ["VERIFY-BAD-JSON"])
+
+    def test_no_cases_and_not_frozen_cannot_pass(self):
+        p = self.f("verify.json", json.dumps({"commit": self.head, "cases_hash": "", "verdict": "VERIFIED", "rows": []}))
+        errs = gates.gate_verify(p, os.path.join(self.files, "no-spec.md"), "", self.repo, "", self.files)
+        self.assertEqual(codes(errs), ["VERIFY-NO-CASES", "VERIFY-NOT-FROZEN"])
+
+    def test_a_row_whose_case_is_not_a_string(self):
+        r = self.report()
+        r["rows"][0]["case"] = ["VC-01"]
+        self.assertEqual(codes(self.verify(r)), ["VERIFY-BAD-JSON"])
+        r["rows"][0]["case"] = None
+        self.assertEqual(codes(self.verify(r)), ["VERIFY-BAD-JSON"])
+
+    def test_evidence_must_be_a_file_inside_the_files_folder(self):
+        outside = self.write(os.path.join(self.t, "outside.txt"), "x")
+        for path in (".", "evidence", "/etc/hosts", "../outside.txt", outside, ""):
+            r = self.report()
+            r["rows"][0]["evidence"] = [{"kind": "server", "path": path}]
+            self.assertEqual(codes(self.verify(r)), ["VERIFY-EVIDENCE-MISSING"], path)
+
+    def test_a_failed_diff_case_is_a_fix(self):
+        r = self.report()
+        r["rows"].append({"case": "DC-01", "result": "fail", "class": "bug-app", "baseline": "none"})
+        for word in ("VERIFIED", "BLOCKED"):
+            self.assertEqual(codes(self.verify({**r, "verdict": word})), ["VERIFY-VERDICT-MISMATCH"], word)
+        self.assertEqual(self.verify({**r, "verdict": "FIX"}), [])
+        self.assertEqual(self.verify({**r, "verdict": "NEEDS_USER"}), [])
 
     def test_stale_commit_and_changed_cases(self):
         errs = self.verify(self.report(commit="abc", cases_hash="old"))

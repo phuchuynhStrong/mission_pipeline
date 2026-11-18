@@ -440,9 +440,24 @@ class GateTest(OpsCase):
         self.assertEqual(self.ops("gate", "app", "m1", "plan").returncode, 1)
         self.assertIn("PLAN-CASES-CHANGED", self.read(os.path.join(self.files, "gate-plan.md")))
 
-    def test_freeze_cases_refuses_a_spec_with_no_block(self):
+    def test_freeze_cases_refuses_a_spec_with_no_block_or_no_case(self):
         self.write(self.spec, "# Spec\n")
         self.assertEqual(self.ops("freeze-cases", "app", "m1").returncode, 3)
+        self.write(self.spec, "<!-- cases:start -->\n<!-- cases:end -->\n")
+        self.assertEqual(self.ops("freeze-cases", "app", "m1").returncode, 3)
+
+    def test_plan_gate_before_the_freeze_fails(self):
+        self.assertEqual(self.ops("gate", "app", "m1", "plan").returncode, 1)
+        self.assertIn("PLAN-NOT-FROZEN", self.read(os.path.join(self.files, "gate-plan.md")))
+
+    def test_a_gate_that_breaks_exits_3_with_one_stderr_line(self):
+        m = json.loads(self.read(self.state))
+        m["stages"]["read"] = {"paths": [{"not": "a path"}]}  # the gate itself breaks (TypeError)
+        self.write(self.state, json.dumps(m))
+        r = self.ops("gate", "app", "m1", "read")
+        self.assertEqual((r.returncode, r.stdout), (3, ""))
+        self.assertEqual(len(r.stderr.strip().splitlines()), 1)
+        self.assertFalse(os.path.exists(self.patterns))
 
     def test_verify_gate_checks_the_worktree_head(self):
         frozen = self.ops("freeze-cases", "app", "m1").stdout.strip()
