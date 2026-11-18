@@ -341,5 +341,143 @@ class WatchTest(OpsCase):
         self.assertFalse(os.path.exists(os.path.join(self.files, "pr-final.json")))
 
 
+
+SPEC_OK = """# Spec
+
+## Goal
+g
+
+## Design
+d
+
+- RQ-01: settled
+
+<!-- cases:start -->
+### VC-01 The note shows
+family: main
+- [mobile] open the job
+expected: the note is in the list
+
+- no error case: nothing can fail here
+- no permission case: no right of its own
+<!-- cases:end -->
+"""
+PLAN_OK = "<!-- case-tasks:start -->\nVC-01: T1\n<!-- case-tasks:end -->\ntier: mobile\n"
+
+
+class GateTest(OpsCase):
+    """`gate`, `freeze-cases` and the pattern log (verification loop slice 1)."""
+
+    def setUp(self):
+        super().setUp()
+        self.spec = os.path.join(self.repo, "docs/spec.md")
+        self.plan = os.path.join(self.repo, "docs/plan.md")
+        self.write(self.spec, SPEC_OK)
+        self.write(self.plan, PLAN_OK)
+        self.write(os.path.join(self.files, "requirement-findings.md"), "- RQ-01 | ambiguous | s | none\n")
+        self.mission(spec=self.spec, plan=self.plan)
+        self.state = os.path.join(self.root, "app", "m1.json")
+        self.patterns = os.path.join(self.root, "patterns.jsonl")
+
+    def set(self, **kv):
+        m = json.loads(self.read(self.state))
+        m.update(kv)
+        self.write(self.state, json.dumps(m))
+
+    def rows(self):
+        return [json.loads(l) for l in self.read(self.patterns).splitlines()] if os.path.exists(self.patterns) else []
+
+    def test_spec_gate_pass_prints_one_word(self):
+        r = self.ops("gate", "app", "m1", "spec")
+        self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "pass\n", ""))
+        self.assertFalse(os.path.exists(os.path.join(self.files, "gate-spec.md")))
+        self.assertEqual(self.rows(), [])
+
+    def test_spec_gate_fail_writes_the_list_and_the_patterns_then_clears(self):
+        self.write(self.spec, SPEC_OK.replace("expected: the note is in the list\n", "").replace("- RQ-01: settled\n", ""))
+        r = self.ops("gate", "app", "m1", "spec")
+        out = os.path.join(self.files, "gate-spec.md")
+        self.assertEqual((r.returncode, r.stdout), (1, f"fail 2 {out}\n"))
+        self.assertEqual([l.split(":")[0] for l in self.read(out).splitlines()],
+                         ["- SPEC-CASE-EXPECTED", "- SPEC-FINDING-UNRESOLVED"])
+        self.assertEqual([(x["mission"], x["stage"], x["key"], x["escaped"]) for x in self.rows()],
+                         [("app/m1", "spec", "SPEC-CASE-EXPECTED", False), ("app/m1", "spec", "SPEC-FINDING-UNRESOLVED", False)])
+        self.write(self.spec, SPEC_OK)
+        self.assertEqual(self.ops("gate", "app", "m1", "spec").stdout, "pass\n")
+        self.assertFalse(os.path.exists(out))
+
+    def test_gate_does_not_write_mission_state(self):
+        before = self.read(self.state)
+        self.ops("gate", "app", "m1", "spec")
+        self.ops("gate", "app", "m1", "plan")
+        self.assertEqual(self.read(self.state), before)
+
+    def test_unknown_stage_and_bad_repo_are_refused(self):
+        self.assertEqual(self.ops("gate", "app", "m1", "build").returncode, 3)
+        self.assertEqual(self.ops("gate", "app", "m1", "read", "--repo", "nokey").returncode, 3)
+        self.assertEqual(self.ops("gate", "app", "nope", "spec").returncode, 3)
+
+    def test_read_gate_uses_the_mission_repo_or_the_given_keys(self):
+        readings = os.path.join(self.files, "readings", "ui.md")
+        self.write(readings, "[app:README.md:1]\n\n## Could not verify\nnone\n")
+        m = json.loads(self.read(self.state))
+        m["stages"]["read"] = {"paths": [readings]}
+        self.write(self.state, json.dumps(m))
+        self.assertEqual(self.ops("gate", "app", "m1", "read").stdout, "pass\n")
+        r = self.ops("gate", "app", "m1", "read", "--repo", f"web={self.repo}")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("READ-REPO-UNKNOWN", self.read(os.path.join(self.files, "gate-read.md")))
+        self.assertEqual(self.ops("gate", "app", "m1", "read", "--repo", f"app={self.repo}", "--repo", f"web={self.wt}").stdout,
+                         "pass\n")
+
+    def test_freeze_cases_then_the_plan_gate_sees_a_change(self):
+        r = self.ops("freeze-cases", "app", "m1")
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(json.loads(self.read(self.state))["cases_hash"], r.stdout.strip())
+        self.assertEqual(len(r.stdout.strip()), 64)
+        self.assertEqual(self.ops("gate", "app", "m1", "plan").stdout, "pass\n")
+        self.write(self.spec, SPEC_OK.replace("the note is in the list", "something else"))
+        self.assertEqual(self.ops("gate", "app", "m1", "plan").returncode, 1)
+        self.assertIn("PLAN-CASES-CHANGED", self.read(os.path.join(self.files, "gate-plan.md")))
+
+    def test_freeze_cases_refuses_a_spec_with_no_block(self):
+        self.write(self.spec, "# Spec\n")
+        self.assertEqual(self.ops("freeze-cases", "app", "m1").returncode, 3)
+
+    def test_verify_gate_checks_the_worktree_head(self):
+        frozen = self.ops("freeze-cases", "app", "m1").stdout.strip()
+        head = git("-C", self.wt, "rev-parse", "HEAD").stdout.strip()
+        self.write(os.path.join(self.files, "evidence", "a.txt"), "x")
+        report = {"commit": head, "cases_hash": frozen, "verdict": "VERIFIED", "rows": [
+            {"case": "VC-01", "result": "pass", "class": "", "baseline": "fail",
+             "evidence": [{"kind": "screen", "path": "evidence/a.txt"}]}]}
+        self.write(os.path.join(self.files, "verify.json"), json.dumps(report))
+        self.assertEqual(self.ops("gate", "app", "m1", "verify").stdout, "pass\n")
+        self.write(os.path.join(self.files, "verify.json"), json.dumps({**report, "commit": "0" * 40}))
+        self.assertEqual(self.ops("gate", "app", "m1", "verify").returncode, 1)
+        self.assertIn("VERIFY-COMMIT-STALE", self.read(os.path.join(self.files, "gate-verify.md")))
+
+    def test_patterns_add_repeat_and_notice_once(self):
+        self.write(os.path.join(self.root, "app", "m2.json"), json.dumps({"id": "m2"}))
+        self.assertEqual(self.ops("patterns-add", "app", "m1", "--stage", "verify", "--key", "verify:bug-app", "--class", "bug-app").returncode, 0)
+        self.assertEqual(self.ops("patterns-add", "app", "m1", "--stage", "verify", "--key", "verify:bug-app").returncode, 0)
+        self.assertEqual(self.ops("patterns-repeat").stdout, "")  # one mission only
+        self.ops("patterns-add", "app", "m2", "--stage", "verify", "--key", "verify:bug-app")
+        self.ops("patterns-add", "app", "m2", "--stage", "spec", "--key", "SPEC-NO-CASES")
+        r = self.ops("patterns-repeat", "--notice")
+        self.assertEqual(json.loads(r.stdout), {"key": "verify:bug-app", "missions": ["app/m1", "app/m2"]})
+        self.ops("patterns-repeat", "--notice")
+        notices = self.read(os.path.join(self.root, "notices.jsonl")).splitlines()
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(json.loads(notices[0])["kind"], "pattern")
+        self.assertEqual(self.ops("patterns-repeat", "--min", "3").stdout, "")
+
+    def test_patterns_escaped_and_a_corrupt_file(self):
+        self.assertEqual(self.ops("patterns-escaped", "app", "m1", "--ticket", "WBS-9").returncode, 0)
+        row = self.rows()[0]
+        self.assertEqual((row["escaped"], row["ticket"], row["key"]), (True, "WBS-9", "escaped"))
+        self.write(self.patterns, "not json\n")
+        self.assertEqual(self.ops("patterns-repeat").returncode, 3)
+
 if __name__ == "__main__":
     unittest.main()

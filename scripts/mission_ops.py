@@ -12,17 +12,25 @@
   mission_ops.py pr-create <slug> <id>               # gh pr create from those files -> {"number":N,"url":...}
   mission_ops.py greptile-delay <slug> <id> [--seconds 300]
   mission_ops.py merge-watch <slug> <id> [--interval 300] [--deadline 21600]
+  mission_ops.py gate <slug> <id> <read|spec|plan|verify> [--repo key=path ...]
+                                                     # one line: `pass` (exit 0) or `fail <n> <path>` (exit 1)
+  mission_ops.py freeze-cases <slug> <id>            # cases_hash <- the spec's cases block; prints it
+  mission_ops.py patterns-add <slug> <id> --stage S --key K [--class C]
+  mission_ops.py patterns-escaped <slug> <id> --ticket T
+  mission_ops.py patterns-repeat [--min 2] [--notice]  # keys seen in <min> or more missions, one JSON line each
 
 Each one reads the mission with state.load and touches only its repo, worktree,
 branch and files folder (ROOT/files/<slug>/<id>/). Exit codes: 0 ok, 3 refused or
-bad mission, 2 merge-watch timeout, 1 prep-status not committed; a failing git/gh step passes its exit code
-through with its output on stderr. Never --force, --no-verify or --amend.
+bad mission, 2 merge-watch timeout, 1 prep-status not committed or a gate that failed; a failing git/gh step
+passes its exit code through with its output on stderr. A gate reads only and writes only its own error file
+`gate-<stage>.md` and the pattern log; `freeze-cases` is the one command here that writes mission state. Never --force, --no-verify or --amend.
 """
 import argparse, json, os, re, shutil, subprocess, sys, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)  # python3 -I drops the script folder
 import state  # noqa: E402
+import gates  # noqa: E402
 
 GIT_STATE = ("MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply")
 
@@ -268,15 +276,130 @@ def cmd_merge_watch(a, m):
     return 2
 
 
+PATTERNS = "patterns.jsonl"  # ROOT/patterns.jsonl: one row per failure, across missions (design 5.14)
+NOTICED = "patterns-noticed.json"  # keys that already got a repeat notice
+
+
+def pattern_row(a, stage_name, key, klass="", escaped=False, ticket=""):
+    row = {"at": state.now(), "mission": f"{a.slug}/{a.id}", "stage": stage_name, "key": key,
+           "class": klass, "escaped": escaped, "ticket": ticket}
+    state.append_text(os.path.join(state.ROOT, PATTERNS), json.dumps(row))
+
+
+def read_patterns():
+    p = os.path.join(state.ROOT, PATTERNS)
+    if not os.path.exists(p):
+        return []
+    rows = []
+    with open(p) as f:
+        for line in f:
+            if line.strip():
+                try:
+                    row = json.loads(line)
+                    if not isinstance(row, dict):
+                        raise ValueError(line)
+                except ValueError:
+                    raise Refused(f"bad pattern file: {p}")
+                rows.append(row)
+    return rows
+
+
+def gate_repos(a, m):
+    """Repo key -> path for citations. Default: the mission's repo under its slug."""
+    out = {}
+    for item in a.repo or []:
+        key, sep, path = item.partition("=")
+        if not sep or not key or not path:
+            raise Refused(f"--repo wants key=path, got {item}")
+        out[key] = path
+    if not out and m.get("repo"):
+        out[a.slug] = m["repo"]
+    return out
+
+
+def cmd_gate(a, m):
+    d = files_dir(a)
+    findings, frozen = os.path.join(d, "requirement-findings.md"), m.get("cases_hash") or ""
+    if a.stage == "read":
+        errs = gates.gate_read(list(stage(m, "read", "paths") or []), gate_repos(a, m), findings)
+    elif a.stage == "spec":
+        errs = gates.gate_spec(stage(m, "spec", "path"), findings)
+    elif a.stage == "plan":
+        errs = gates.gate_plan(stage(m, "plan", "path"), stage(m, "spec", "path"), frozen)
+    elif a.stage == "verify":
+        errs = gates.gate_verify(os.path.join(d, "verify.json"), stage(m, "spec", "path"), frozen,
+                                 stage(m, "worktree", "path"), os.path.join(d, "found-defects.md"), d)
+    else:
+        raise Refused(f"no gate for stage {a.stage}")
+    out = os.path.join(d, f"gate-{a.stage}.md")
+    if not errs:
+        if os.path.exists(out):  # the error list of an earlier, failed run of this gate
+            os.remove(out)
+        print("pass")
+        return 0
+    state.write_text(out, "".join(f"- {code}: {text}\n" for code, text in errs))
+    for code in sorted({code for code, _ in errs}):
+        pattern_row(a, a.stage, code)
+    print(f"fail {len(errs)} {out}")
+    return 1
+
+
+def cmd_freeze_cases(a, m):
+    block = gates.parse_cases(gates.read_text(stage(m, "spec", "path")) or "")[0]
+    if block is None:
+        raise Refused("the spec has no cases block")
+    m["cases_hash"] = gates.cases_hash(block)
+    state.save(a.slug, a.id, m)
+    print(m["cases_hash"])
+
+
+def cmd_patterns_add(a, m):
+    pattern_row(a, a.stage, a.key, a.klass or "")
+
+
+def cmd_patterns_escaped(a, m):
+    pattern_row(a, "escaped", "escaped", escaped=True, ticket=a.ticket)
+
+
+def patterns_repeat(a):
+    by = {}
+    for row in read_patterns():
+        by.setdefault(row.get("key") or "", set()).add(row.get("mission") or "")
+    hits = {k: sorted(v) for k, v in sorted(by.items()) if k and len(v) >= a.min}
+    for key, missions in hits.items():
+        print(json.dumps({"key": key, "missions": missions}))
+    if a.notice:
+        p = os.path.join(state.ROOT, NOTICED)
+        try:
+            with open(p) as f:
+                noticed = json.load(f)
+            if not isinstance(noticed, list):
+                raise ValueError(p)
+        except FileNotFoundError:
+            noticed = []
+        except ValueError:
+            raise Refused(f"bad file: {p}")
+        for key, missions in hits.items():
+            if key not in noticed:
+                state.notice_add("pattern", f"repeat pattern {key}: {', '.join(missions)}")
+                noticed.append(key)
+        state.write_json(p, noticed)
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("owner-repo").add_argument("repo_path")
+    pr = sub.add_parser("patterns-repeat")
+    pr.add_argument("--min", type=int, default=2)
+    pr.add_argument("--notice", action="store_true")
     cmds = {}
     for name, fn in (("docs-commit", cmd_docs_commit), ("prep-commit", cmd_prep_commit),
                      ("prep-status", cmd_prep_status), ("remove-old-plan", cmd_remove_old_plan),
                      ("move-doc", cmd_move_doc), ("push", cmd_push), ("pr-split", cmd_pr_split),
-                     ("pr-create", cmd_pr_create),
+                     ("pr-create", cmd_pr_create), ("gate", cmd_gate), ("freeze-cases", cmd_freeze_cases),
+                     ("patterns-add", cmd_patterns_add), ("patterns-escaped", cmd_patterns_escaped),
                      ("greptile-delay", cmd_greptile_delay), ("merge-watch", cmd_merge_watch)):
         s = sub.add_parser(name)
         s.add_argument("slug")
@@ -285,6 +408,12 @@ def main():
     for name in ("docs-commit", "prep-commit", "pr-split"):
         cmds[name][1].add_argument("--scope", required=True)
     cmds["move-doc"][1].add_argument("--to", required=True)
+    cmds["gate"][1].add_argument("stage")
+    cmds["gate"][1].add_argument("--repo", action="append")
+    cmds["patterns-add"][1].add_argument("--stage", required=True)
+    cmds["patterns-add"][1].add_argument("--key", required=True)
+    cmds["patterns-add"][1].add_argument("--class", dest="klass")
+    cmds["patterns-escaped"][1].add_argument("--ticket", required=True)
     cmds["greptile-delay"][1].add_argument("--seconds", type=float, default=300)
     cmds["merge-watch"][1].add_argument("--interval", type=float, default=300)
     cmds["merge-watch"][1].add_argument("--deadline", type=float, default=6 * 3600)
@@ -293,6 +422,12 @@ def main():
         try:
             print(owner_repo(a.repo_path))
             return 0
+        except Refused as e:
+            print(f"refused: {e}", file=sys.stderr)
+            return 3
+    if a.cmd == "patterns-repeat":  # across missions: no mission argument
+        try:
+            return patterns_repeat(a)
         except Refused as e:
             print(f"refused: {e}", file=sys.stderr)
             return 3
