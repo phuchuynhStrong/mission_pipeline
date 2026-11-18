@@ -91,10 +91,13 @@ const props = {
 }
 
 test('trackOf returns one status per stage', () => {
-  expect(trackOf(sample)).toEqual(['done', 'waiting_user', 'pending', 'pending', 'pending', 'pending', 'pending'])
-  expect(trackOf({ ...sample, stages: {} })).toEqual(Array(7).fill('pending'))
-  expect(trackOf({ ...sample, stages: undefined as unknown as Mission['stages'] })).toEqual(Array(7).fill('pending'))
-  expect(trackOf({ ...sample, stages: { ...sample.stages, ready: { status: 'active' } } })).toHaveLength(7)
+  // read, scope, spec, plan, preflight, worktree, build, review, verify, pr; an old mission has no scope, preflight or verify
+  expect(trackOf(sample)).toEqual(['done', 'pending', 'waiting_user', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending', 'pending'])
+  expect(trackOf({ ...sample, stages: {} })).toEqual(Array(10).fill('pending'))
+  expect(trackOf({ ...sample, stages: undefined as unknown as Mission['stages'] })).toEqual(Array(10).fill('pending'))
+  expect(trackOf({ ...sample, stages: { ...sample.stages, ready: { status: 'active' } } })).toHaveLength(10)
+  const skipped = trackOf({ ...sample, stages: { ...sample.stages, scope: { status: 'skipped' }, verify: { status: 'active' } } })
+  expect([skipped[1], skipped[8]]).toEqual(['skipped', 'active'])
 })
 
 test('badgeOf: failed beats asks beats merge beats working', () => {
@@ -113,6 +116,9 @@ test('stageWordOf names the stage lane in at most 8 chars', () => {
   expect(stageWordOf(sample)).toBe('spec')
   expect(stageWordOf({ ...sample, stage: 'worktree' })).toBe('tree')
   expect(stageWordOf({ ...sample, stage: 'ready' })).toBe('pr')
+  expect(stageWordOf({ ...sample, stage: 'preflight' })).toBe('pflight')
+  expect(stageWordOf({ ...sample, stage: 'scope' })).toBe('scope')
+  expect(stageWordOf({ ...sample, stage: 'verify' })).toBe('verify')
   expect(stageWordOf({ ...sample, stage: 'integration-x' })).toBe('integrat')
   expect(stageWordOf({ ...sample, stage: '' })).toBe('')
 })

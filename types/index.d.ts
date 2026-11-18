@@ -1,7 +1,8 @@
-export type StageStatus = 'pending' | 'active' | 'waiting_user' | 'done' | 'failed'
+/** `skipped` = the stage is not part of this mission's flow (a feature has no scope; tier none has no preflight or verify). */
+export type StageStatus = 'pending' | 'active' | 'waiting_user' | 'done' | 'failed' | 'skipped'
 
 /** `pr` = PR open, Greptile check running or waiting on the user. `ready` = Greptile done, PR not yet merged. `aborted` and `done` are terminal: the board hides them and never auto-opens for them. */
-export type MissionStageName = 'read' | 'spec' | 'plan' | 'worktree' | 'build' | 'review' | 'pr' | 'ready' | 'done' | 'aborted'
+export type MissionStageName = 'read' | 'scope' | 'spec' | 'plan' | 'preflight' | 'worktree' | 'build' | 'review' | 'verify' | 'pr' | 'ready' | 'done' | 'aborted'
 
 /** `number` and `url` are on the `pr` stage only; `number` is 0 and `url` empty until the PR exists. */
 export type MissionStage = { status: StageStatus; number?: number; url?: string }

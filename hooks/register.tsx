@@ -5,7 +5,7 @@ import type { Mission, Notice, StageStatus } from '../types'
 export const PANE = 'pipeline-board'
 let cache: Mission[] = []
 
-const STAGES = ['read', 'spec', 'plan', 'worktree', 'build', 'review', 'pr'] as const
+const STAGES = ['read', 'scope', 'spec', 'plan', 'preflight', 'worktree', 'build', 'review', 'verify', 'pr'] as const
 
 /** How a mission reads as a whole: blocked (red) > asking (yellow) > running (green). */
 export type MissionTone = 'running' | 'asking' | 'blocked'
@@ -58,9 +58,9 @@ export function badgeOf(m: Mission): Badge | undefined {
 }
 
 const STAGE_WIDTH = 8
-const STAGE_WORD: Record<string, string> = { ready: 'pr', worktree: 'tree' }
+const STAGE_WORD: Record<string, string> = { ready: 'pr', worktree: 'tree', preflight: 'pflight' }
 
-/** Pure: the stage lane word, at most STAGE_WIDTH chars. `ready` reads `pr`, `worktree` reads `tree`. */
+/** Pure: the stage lane word, at most STAGE_WIDTH chars. `ready` reads `pr`, `worktree` reads `tree`, `preflight` reads `pflight`. */
 export function stageWordOf(m: Mission): string {
   const word = STAGE_WORD[m.stage] ?? m.stage ?? ''
   return word.slice(0, STAGE_WIDTH)
