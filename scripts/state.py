@@ -17,6 +17,8 @@
   state.py note add <text> | show                  # coordinator-notes.md, read back after /compact
   state.py heartbeat --terminal <handle>           # heartbeat: {"at": epoch ms, "iso", "terminal"}
   state.py file write <slug> <id> <name> | dir <slug> <id>   # ROOT/files/<slug>/<id>/; write reads stdin
+  state.py file append <slug> <id> <name>          # stdin appended under a lock (parallel workers lose no row)
+  state.py count <slug> <id> <name>                # counters[name] += 1 -> "<value> <limit|->"; exit 5 over the limit
 
 `run` exits 3 when coordinator.json is corrupt or has no run_id. `owner` exits 3 when
 no open mission lists the Dispatch, 4 when two do; any other non-zero exit is a failure.
@@ -28,10 +30,13 @@ else kept as a string. `key+=value` appends to a list; `dispatches+=` and
 `attention` is the board's switch button: set `attention.terminal=<handle>
 attention.reason="<one line>"` when a mission waits on the user; `attention=null` clears it.
 """
-import json, os, sys, argparse, datetime, tempfile
+import fcntl, json, os, sys, argparse, datetime, tempfile
 
 ROOT = os.path.join(os.path.expanduser("~"), ".claude", "pipeline")
-STAGES = ["read", "spec", "plan", "worktree", "build", "review", "pr"]
+STAGES = ["read", "scope", "spec", "plan", "preflight", "worktree", "build", "review", "verify", "pr"]
+# Stage statuses: pending active waiting_user done failed skipped. `skipped` = not part of this mission's flow.
+# Mission counters and their limits (design 5.8). `gate:<stage>:<round>` uses the limit of `gate`.
+LIMITS = {"fix_review": 2, "fix_verify": 2, "spec_returns": 1, "preflight_reruns": 1, "tier_raises": 1, "gate": 1}
 TERMINAL = ["done", "aborted"]  # stage values the board treats as closed; "ready" (PR open, waiting merge) is still open
 COORD = os.path.join(ROOT, "coordinator.json")  # the coordinator's saved Run, shared by every mission
 RAW_LISTS = ("dispatches", "settled")  # Orca ids: append as given, never parse_value
@@ -71,6 +76,20 @@ def write_text(p, text):
     with os.fdopen(fd, "w") as f:
         f.write(text)
     os.replace(tmp, p)
+
+
+def append_text(p, text):
+    """Append under an exclusive lock, so parallel writers lose no row. Ends the text with a newline."""
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    if text and not text.endswith("\n"):
+        text += "\n"
+    with open(p, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            f.write(text)
+            f.flush()
+        finally:
+            fcntl.flock(f, fcntl.LOCK_UN)
 
 
 def open_missions():
@@ -114,14 +133,19 @@ def cmd_new(a):
         "repo": a.repo or "", "repo_slug": a.slug, "run_id": a.run_id,
         "dispatches": [], "settled": [],
         "base_branch": a.base_branch or "", "created": now(), "updated": "",
+        "kind": a.kind or "feature", "tier": "none", "cases_hash": "", "counters": {},
         "stage": "read", "note": "created", "attention": None,
         "stages": {
             "read": {"status": "pending", "workers": [], "paths": []},
+            # scope, preflight and verify stay skipped until the coordinator skill drives them
+            "scope": {"status": "skipped", "worker": "", "path": "", "verdict": ""},
             "spec": {"status": "pending", "worker": "", "path": ""},
             "plan": {"status": "pending", "worker": "", "path": "", "tasks": 0, "parallel": False},
+            "preflight": {"status": "skipped", "worker": "", "path": "", "verdict": ""},
             "worktree": {"status": "pending", "path": "", "branch": ""},
             "build": {"status": "pending", "workers": [], "done": 0},
             "review": {"status": "pending", "worker": "", "verdict": "", "rounds": 0},
+            "verify": {"status": "skipped", "worker": "", "path": "", "verdict": "", "rounds": 0},
             "pr": {"status": "pending", "number": 0, "url": "", "greptile": "", "worker": ""},
         },
         "events": [{"at": now(), "text": "mission created"}],
@@ -179,6 +203,20 @@ def cmd_done(a):
     data["events"].append({"at": now(), "text": data["note"]})
     save(a.slug, a.id, data)
     print(f'{data["id"]} stage={data["stage"]} note={data["note"]}')
+
+
+def cmd_count(a):
+    data = load(a.slug, a.id)
+    counters = data.get("counters")
+    if not isinstance(counters, dict):
+        counters = data["counters"] = {}
+    value = int(counters.get(a.name) or 0) + 1
+    counters[a.name] = value
+    save(a.slug, a.id, data)
+    limit = LIMITS.get(a.name.split(":", 1)[0])
+    print(f'{value} {limit if limit is not None else "-"}')
+    if limit is not None and value > limit:
+        sys.exit(5)
 
 
 def cmd_show(a):
@@ -519,7 +557,7 @@ def safe_part(p):
 
 
 def cmd_file(a):
-    parts = a.name.split("/") if a.action == "write" else []
+    parts = a.name.split("/") if a.action in ("write", "append") else []
     if not (safe_part(a.slug) and safe_part(a.id)) or len(parts) > 2 or not all(safe_part(x) for x in parts):
         print("refused: bad slug, id or name", file=sys.stderr)
         sys.exit(3)
@@ -529,7 +567,10 @@ def cmd_file(a):
         print(d)
         return
     p = os.path.join(d, *parts)
-    write_text(p, sys.stdin.read())
+    if a.action == "append":
+        append_text(p, sys.stdin.read())
+    else:
+        write_text(p, sys.stdin.read())
     print(p)
 
 
@@ -567,7 +608,7 @@ def main():
     sub = p.add_subparsers(dest="cmd", required=True)
     n = sub.add_parser("new"); n.add_argument("slug"); n.add_argument("id")
     n.add_argument("--ticket"); n.add_argument("--title"); n.add_argument("--repo"); n.add_argument("--base-branch")
-    n.add_argument("--run-id", required=True)
+    n.add_argument("--run-id", required=True); n.add_argument("--kind", choices=["bug", "feature"])
     n.set_defaults(fn=cmd_new)
     s = sub.add_parser("set"); s.add_argument("slug"); s.add_argument("id"); s.add_argument("pairs", nargs="+")
     s.set_defaults(fn=cmd_set)
@@ -577,6 +618,7 @@ def main():
     dn.set_defaults(fn=cmd_done)
     for name, fn in (("show", cmd_show), ("path", cmd_path)):
         c = sub.add_parser(name); c.add_argument("slug"); c.add_argument("id"); c.set_defaults(fn=fn)
+    ct = sub.add_parser("count"); ct.add_argument("slug"); ct.add_argument("id"); ct.add_argument("name"); ct.set_defaults(fn=cmd_count)
     l = sub.add_parser("list"); l.add_argument("slug", nargs="?"); l.add_argument("--all", action="store_true"); l.set_defaults(fn=cmd_list)
     r = sub.add_parser("run"); r.add_argument("--set", dest="set_id"); r.add_argument("--terminal", dest="terminal"); r.set_defaults(fn=cmd_run)
     o = sub.add_parser("owner"); o.add_argument("dispatch"); o.set_defaults(fn=cmd_owner)
@@ -602,6 +644,7 @@ def main():
     hb = sub.add_parser("heartbeat"); hb.add_argument("--terminal", required=True); hb.set_defaults(fn=cmd_heartbeat)
     fl = sub.add_parser("file"); fs = fl.add_subparsers(dest="action", required=True)
     fw = fs.add_parser("write"); fw.add_argument("slug"); fw.add_argument("id"); fw.add_argument("name")
+    fa = fs.add_parser("append"); fa.add_argument("slug"); fa.add_argument("id"); fa.add_argument("name")
     fd = fs.add_parser("dir"); fd.add_argument("slug"); fd.add_argument("id")
     fl.set_defaults(fn=cmd_file)
     a = p.parse_args()

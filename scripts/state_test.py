@@ -465,5 +465,90 @@ class FileTest(StateCase):
         self.assertEqual((r.returncode, r.stdout), (0, "repo m1 live\n"))
 
 
+
+class VerificationLoopTest(StateCase):
+    """Slice 1 of the verification loop: new stages, kind, file append, counters."""
+
+    def new(self, *extra):
+        return self.state("new", "app", "m1", "--run-id", "run_a", *extra)
+
+    def load(self):
+        return json.loads(self.read(os.path.join(self.root, "app", "m1.json")))
+
+    def test_new_has_the_new_stages_skipped(self):
+        self.assertEqual(self.new().returncode, 0)
+        m = self.load()
+        self.assertEqual([k for k in m["stages"]],
+                         ["read", "scope", "spec", "plan", "preflight", "worktree", "build", "review", "verify", "pr"])
+        for name in ("scope", "preflight", "verify"):
+            self.assertEqual(m["stages"][name]["status"], "skipped")
+        self.assertEqual((m["kind"], m["tier"], m["cases_hash"], m["counters"]), ("feature", "none", "", {}))
+
+    def test_new_kind_bug(self):
+        self.assertEqual(self.new("--kind", "bug").returncode, 0)
+        self.assertEqual(self.load()["kind"], "bug")
+        self.assertNotEqual(self.state("new", "app", "m2", "--run-id", "r", "--kind", "chore").returncode, 0)
+
+    def test_abort_fails_an_active_new_stage_and_keeps_skipped(self):
+        self.new()
+        self.state("set", "app", "m1", "stages.verify.status=active")
+        self.assertEqual(self.state("abort", "app", "m1").returncode, 0)
+        m = self.load()
+        self.assertEqual(m["stages"]["verify"]["status"], "failed")
+        self.assertEqual(m["stages"]["scope"]["status"], "skipped")
+
+    def test_abort_of_an_old_mission_without_the_new_stages(self):
+        old = {"id": "m1", "stage": "build", "note": "", "events": [],
+               "stages": {"build": {"status": "active"}}}
+        self.write(os.path.join(self.root, "app", "m1.json"), json.dumps(old))
+        self.assertEqual(self.state("abort", "app", "m1").returncode, 0)
+        self.assertEqual(self.load()["stages"]["build"]["status"], "failed")
+
+    def append(self, text, name="found-defects.md"):
+        return subprocess.run([sys.executable, "-I", STATE, "file", "append", "app", "m1", name],
+                              env={**os.environ, "HOME": self.home}, input=text, capture_output=True, text=True)
+
+    def test_file_append_adds_rows_and_a_newline(self):
+        self.assertEqual(self.append("- FD-01 | a").returncode, 0)
+        r = self.append("- FD-02 | b\n")
+        self.assertEqual(r.returncode, 0)
+        self.assertEqual(self.read(r.stdout.strip()), "- FD-01 | a\n- FD-02 | b\n")
+
+    def test_file_append_refuses_a_bad_name(self):
+        self.assertEqual(self.append("x", name="../x").returncode, 3)
+
+    def test_file_append_in_parallel_loses_no_row(self):
+        env = {**os.environ, "HOME": self.home}
+        procs = [subprocess.Popen([sys.executable, "-I", STATE, "file", "append", "app", "m1", "rows.md"],
+                                  env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True) for _ in range(8)]
+        for i, p in enumerate(procs):
+            p.stdin.write(f"- row {i} " + "x" * 5000)
+            p.stdin.close()
+        for p in procs:
+            self.assertEqual(p.wait(), 0)
+            p.stdout.close()
+        lines = self.read(os.path.join(self.root, "files", "app", "m1", "rows.md")).splitlines()
+        self.assertEqual(sorted(l[:8] for l in lines), sorted(f"- row {i} " for i in range(8)))
+        self.assertTrue(all(len(l) == 5008 for l in lines))
+
+    def test_count_stops_over_the_limit(self):
+        self.new()
+        r = self.state("count", "app", "m1", "spec_returns")
+        self.assertEqual((r.returncode, r.stdout), (0, "1 1\n"))
+        r = self.state("count", "app", "m1", "spec_returns")
+        self.assertEqual((r.returncode, r.stdout), (5, "2 1\n"))
+        self.assertEqual(self.load()["counters"]["spec_returns"], 2)
+
+    def test_count_gate_is_per_stage_and_round(self):
+        self.new()
+        self.assertEqual(self.state("count", "app", "m1", "gate:read:0").returncode, 0)
+        self.assertEqual(self.state("count", "app", "m1", "gate:spec:0").returncode, 0)
+        self.assertEqual(self.state("count", "app", "m1", "gate:read:0").returncode, 5)
+
+    def test_count_without_a_limit_and_on_an_old_mission(self):
+        self.write(os.path.join(self.root, "app", "m1.json"), json.dumps({"id": "m1", "stage": "build", "note": ""}))
+        r = self.state("count", "app", "m1", "workers")
+        self.assertEqual((r.returncode, r.stdout), (0, "1 -\n"))
+
 if __name__ == "__main__":
     unittest.main()
