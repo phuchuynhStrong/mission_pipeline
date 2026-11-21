@@ -58,9 +58,9 @@ export function badgeOf(m: Mission): Badge | undefined {
 }
 
 const STAGE_WIDTH = 8
-const STAGE_WORD: Record<string, string> = { ready: 'pr', worktree: 'tree', preflight: 'pflight' }
+const STAGE_WORD: Record<string, string> = { ready: 'pr', worktree: 'tree', preflight: 'pre' }
 
-/** Pure: the stage lane word, at most STAGE_WIDTH chars. `ready` reads `pr`, `worktree` reads `tree`, `preflight` reads `pflight`. */
+/** Pure: the stage lane word, at most STAGE_WIDTH chars. `ready` reads `pr`, `worktree` reads `tree`, `preflight` reads `pre`. */
 export function stageWordOf(m: Mission): string {
   const word = STAGE_WORD[m.stage] ?? m.stage ?? ''
   return word.slice(0, STAGE_WIDTH)

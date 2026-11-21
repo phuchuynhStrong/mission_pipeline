@@ -116,7 +116,7 @@ test('stageWordOf names the stage lane in at most 8 chars', () => {
   expect(stageWordOf(sample)).toBe('spec')
   expect(stageWordOf({ ...sample, stage: 'worktree' })).toBe('tree')
   expect(stageWordOf({ ...sample, stage: 'ready' })).toBe('pr')
-  expect(stageWordOf({ ...sample, stage: 'preflight' })).toBe('pflight')
+  expect(stageWordOf({ ...sample, stage: 'preflight' })).toBe('pre')
   expect(stageWordOf({ ...sample, stage: 'scope' })).toBe('scope')
   expect(stageWordOf({ ...sample, stage: 'verify' })).toBe('verify')
   expect(stageWordOf({ ...sample, stage: 'integration-x' })).toBe('integrat')
