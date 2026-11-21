@@ -3,9 +3,8 @@
 Status: approved for the first build slice on 2026-11-19 by the author, on the owner's
 delegation ("look at the final version ... and approve to build that"). Two design reviews are
 folded in (section 10). The owner answered the five open decisions on 2026-11-21 (section 6).
-Slice 1 (section 8) is built on the branch `feature/verification-loop-slice-1` (worktree
-`~/orca/workspaces/mission_pipeline-verify-loop`), not merged; the owner agreed to it on
-2026-11-21.
+Slice 1 (section 8) is built and merged into `main` (2026-11-21, the owner's yes). Left out of
+slice 1: the plan gate's "named files exist" check and tier-raise reporting.
 
 ## 1. Intent
 
